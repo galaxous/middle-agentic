@@ -13,6 +13,11 @@
            C:\ProgramData\ssh\administrators_authorized_keys
          without BOM and without a ".txt" extension, then locks both files down with icacls.
       5. Optionally sets the OpenSSH DefaultShell (PowerShell or Git Bash) in the registry.
+      6. Installs Python 3.12 and Tailscale via winget (joins the tailnet with -TsAuthKey).
+      7. Role "llm": installs Ollama via winget and starts it on 127.0.0.1:11434.
+      8. Role "gateway": opens TCP 8000 for tailnet addresses only.
+      9. With -ProjectDir (a cloned repo with venv): runs `magent setup`, pulls the model and
+         registers the gateway as a Scheduled Task (at startup, as SYSTEM).
 
 .PARAMETER PublicKey
     The OpenSSH public key line, e.g. "ssh-ed25519 AAAA... user@host".
@@ -27,11 +32,23 @@
 .PARAMETER DefaultShell
     PowerShell | GitBash | None. Default: PowerShell.
 
-.EXAMPLE
-    .\bootstrap-windows.ps1 -PublicKey "ssh-ed25519 AAAA... me@macbook"
+.PARAMETER Roles
+    Comma separated node roles: gateway, llm, client. Default: gateway,llm,client.
+
+.PARAMETER TsAuthKey
+    Tailscale auth key (tskey-auth-...). When given, the machine joins the tailnet unattended.
+
+.PARAMETER Model
+    Local model for the llm role. Default: the value in config.yaml (qwen2.5:3b).
+
+.PARAMETER ProjectDir
+    Path of a cloned middle-agentic repository whose venv is ready (bootstrap.py passes this).
 
 .EXAMPLE
-    & ([scriptblock]::Create((irm https://raw.githubusercontent.com/galaxous/middle-agentic/main/bootstrap-windows.ps1))) -PublicKey "ssh-ed25519 AAAA..." -DefaultShell GitBash
+    .\scripts\bootstrap-windows.ps1 -PublicKey "ssh-ed25519 AAAA... me@macbook" -Roles gateway,llm -TsAuthKey tskey-auth-...
+
+.EXAMPLE
+    & ([scriptblock]::Create((irm https://raw.githubusercontent.com/galaxous/middle-agentic/main/scripts/bootstrap-windows.ps1))) -PublicKey "ssh-ed25519 AAAA..." -DefaultShell GitBash
 #>
 [CmdletBinding()]
 param(
@@ -45,7 +62,20 @@ param(
     [System.Security.SecureString]$Password,
 
     [ValidateSet('PowerShell', 'GitBash', 'None')]
-    [string]$DefaultShell = 'PowerShell'
+    [string]$DefaultShell = 'PowerShell',
+
+    [ValidatePattern('^(gateway|llm|client)(,(gateway|llm|client))*$')]
+    [string]$Roles = 'gateway,llm,client',
+
+    [string]$TsAuthKey,
+
+    [string]$Model,
+
+    [string]$ProjectDir,
+
+    [switch]$SkipTailscale,
+    [switch]$SkipLlm,
+    [switch]$SkipService
 )
 
 Set-StrictMode -Version Latest
@@ -309,6 +339,182 @@ function Set-OpenSshDefaultShell {
     return $shellPath
 }
 
+# ------------------------------------------------------------------ middle-agent node (roles)
+function Test-RoleEnabled([string]$Role) {
+    return (($Roles -split ',') | ForEach-Object { $_.Trim() }) -contains $Role
+}
+
+function Update-SessionPath {
+    $env:Path = [Environment]::GetEnvironmentVariable('Path', 'Machine') + ';' + [Environment]::GetEnvironmentVariable('Path', 'User')
+}
+
+function Install-WingetPackage([string]$Id, [string]$DisplayName) {
+    # Native tools write progress to stderr; with 'Stop' PowerShell 5.1 would turn that into an error.
+    $ErrorActionPreference = 'Continue'
+    $winget = Get-Command winget.exe -ErrorAction SilentlyContinue
+    if ($null -eq $winget) {
+        Write-Warn "winget not found; install $DisplayName manually (winget ships with 'App Installer' from the Microsoft Store)"
+        return $false
+    }
+    Write-Host "    Installing $DisplayName via winget..."
+    & $winget.Source install --id $Id --exact --silent --accept-package-agreements --accept-source-agreements --disable-interactivity | Out-Null
+    $alreadyInstalled = -1978335189 # 0x8A15002B APPINSTALLER_CLI_ERROR_UPDATE_NOT_APPLICABLE
+    if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne $alreadyInstalled) {
+        Write-Warn "winget returned $LASTEXITCODE while installing $Id"
+        return $false
+    }
+    Update-SessionPath
+    Write-Ok "$DisplayName installed"
+    return $true
+}
+
+function Test-PythonCommand([string[]]$Command) {
+    $ErrorActionPreference = 'Continue'
+    try {
+        $arguments = @($Command | Select-Object -Skip 1) + @('-c', 'import sys; print(sys.version_info >= (3, 10))')
+        $output = & $Command[0] @arguments 2>$null
+        return ($LASTEXITCODE -eq 0 -and "$output".Trim() -eq 'True')
+    } catch {
+        return $false
+    }
+}
+
+function Install-Python {
+    Write-Step 'Checking Python 3.10+'
+    if ((Test-PythonCommand @('py', '-3')) -or (Test-PythonCommand @('python'))) {
+        Write-Ok 'Python 3.10+ available'
+        return
+    }
+    Install-WingetPackage -Id 'Python.Python.3.12' -DisplayName 'Python 3.12' | Out-Null
+}
+
+function Get-TailscaleExe {
+    $default = Join-Path $env:ProgramFiles 'Tailscale\tailscale.exe'
+    if (Test-Path $default) { return $default }
+    $command = Get-Command tailscale.exe -ErrorAction SilentlyContinue
+    if ($command) { return $command.Source }
+    return $null
+}
+
+function Install-Tailscale {
+    Write-Step 'Configuring Tailscale'
+    $ErrorActionPreference = 'Continue'
+    $tailscale = Get-TailscaleExe
+    if (-not $tailscale) {
+        Install-WingetPackage -Id 'Tailscale.Tailscale' -DisplayName 'Tailscale' | Out-Null
+        $tailscale = Get-TailscaleExe
+    } else {
+        Write-Ok "Tailscale already installed ($tailscale)"
+    }
+    if (-not $tailscale) {
+        Write-Warn 'Tailscale is not available; nodes will only be reachable on the LAN'
+        return $null
+    }
+
+    & $tailscale status *> $null
+    if ($LASTEXITCODE -ne 0) {
+        if (-not $TsAuthKey) {
+            Write-Warn 'Tailscale is installed but not connected: run "tailscale up --unattended" or pass -TsAuthKey'
+            return $null
+        }
+        # --unattended keeps the node on the tailnet when nobody is logged in (headless worker).
+        & $tailscale up --authkey $TsAuthKey --unattended --hostname ($env:COMPUTERNAME.ToLower()) | Out-Host
+        if ($LASTEXITCODE -ne 0) {
+            Write-Warn "tailscale up failed with exit code $LASTEXITCODE"
+            return $null
+        }
+    }
+    $ip = (& $tailscale ip -4 2>$null | Select-Object -First 1)
+    Write-Ok "Connected to tailnet as $ip"
+    return $ip
+}
+
+function Test-OllamaApi {
+    try {
+        Invoke-RestMethod -Uri 'http://127.0.0.1:11434/api/tags' -TimeoutSec 2 | Out-Null
+        return $true
+    } catch {
+        return $false
+    }
+}
+
+function Get-OllamaExe {
+    $candidates = @(
+        (Join-Path $env:LOCALAPPDATA 'Programs\Ollama\ollama.exe'),
+        (Join-Path $env:ProgramFiles 'Ollama\ollama.exe')
+    )
+    $found = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+    if ($found) { return $found }
+    $command = Get-Command ollama.exe -ErrorAction SilentlyContinue
+    if ($command) { return $command.Source }
+    return $null
+}
+
+function Install-Ollama {
+    Write-Step 'Installing local LLM runtime (Ollama)'
+    $ollama = Get-OllamaExe
+    if (-not $ollama) {
+        Install-WingetPackage -Id 'Ollama.Ollama' -DisplayName 'Ollama' | Out-Null
+        $ollama = Get-OllamaExe
+    } else {
+        Write-Ok "Ollama already installed ($ollama)"
+    }
+    if (-not $ollama) {
+        Write-Warn 'Ollama is not available; the gateway will skip the local tier'
+        return $false
+    }
+
+    if (-not (Test-OllamaApi)) {
+        Start-Process -FilePath $ollama -ArgumentList 'serve' -WindowStyle Hidden
+        for ($i = 0; $i -lt 30 -and -not (Test-OllamaApi); $i++) { Start-Sleep -Seconds 1 }
+    }
+    if (-not (Test-OllamaApi)) {
+        Write-Warn 'Ollama API is not reachable on 127.0.0.1:11434'
+        return $false
+    }
+    Write-Ok 'Ollama API listening on 127.0.0.1:11434 (remote access goes through the gateway)'
+    Write-Warn 'Ollama for Windows starts at user logon; enable auto-logon on a headless worker, otherwise the local tier is skipped until someone logs in'
+    return $true
+}
+
+function Enable-GatewayFirewallRule {
+    Write-Step 'Allowing gateway port 8000 from tailnet addresses only'
+    $name = 'MiddleAgent-Gateway-In-TCP'
+    $tailnetRanges = @('100.64.0.0/10', 'fd7a:115c:a1e0::/48')
+    $rule = Get-NetFirewallRule -Name $name -ErrorAction SilentlyContinue
+    if ($null -eq $rule) {
+        New-NetFirewallRule -Name $name -DisplayName 'middle-agentic gateway (tailnet only)' -Direction Inbound `
+            -Protocol TCP -LocalPort 8000 -RemoteAddress $tailnetRanges -Action Allow -Profile Any | Out-Null
+        Write-Ok 'Firewall rule created (TCP 8000 from 100.64.0.0/10)'
+    } else {
+        $rule | Set-NetFirewallRule -Enabled True -Action Allow -LocalPort 8000 -RemoteAddress $tailnetRanges
+        Write-Ok 'Firewall rule already exists, ensured it is enabled'
+    }
+}
+
+function Initialize-MiddleAgentNode {
+    $venvPython = Join-Path $ProjectDir 'venv\Scripts\python.exe'
+    if (-not (Test-Path $venvPython)) {
+        Write-Warn "venv not found in $ProjectDir; run 'python bootstrap.py ...' from the repository"
+        return
+    }
+    $ErrorActionPreference = 'Continue'
+
+    Write-Step "Writing node configuration (roles: $Roles)"
+    $setupArgs = @('-m', 'middle_agentic', 'setup', '--roles', $Roles, '--no-pull')
+    if ($Model) { $setupArgs += @('--model', $Model) }
+    & $venvPython @setupArgs | Out-Host
+
+    if ((Test-RoleEnabled 'llm') -and -not $SkipLlm -and (Test-OllamaApi)) {
+        Write-Step 'Pulling local model'
+        & $venvPython -m middle_agentic llm pull | Out-Host
+    }
+    if ((Test-RoleEnabled 'gateway') -and -not $SkipService) {
+        Write-Step 'Registering gateway Scheduled Task (at startup, as SYSTEM)'
+        & $venvPython -m middle_agentic service install | Out-Host
+    }
+}
+
 # ------------------------------------------------------------------ main
 Assert-Administrator
 Assert-PublicKeyFormat $PublicKey
@@ -328,6 +534,22 @@ Write-Step 'Restarting sshd to apply configuration'
 Restart-Service -Name sshd
 Write-Ok 'sshd restarted'
 
+Install-Python
+
+$tailscaleIp = $null
+if (-not $SkipTailscale) { $tailscaleIp = Install-Tailscale }
+
+$ollamaReady = $false
+if ((Test-RoleEnabled 'llm') -and -not $SkipLlm) { $ollamaReady = Install-Ollama }
+
+if (Test-RoleEnabled 'gateway') { Enable-GatewayFirewallRule }
+
+if ($ProjectDir) {
+    Initialize-MiddleAgentNode
+} else {
+    Write-Warn 'No -ProjectDir: clone https://github.com/galaxous/middle-agentic and run "python bootstrap.py --pubkey ..." to finish the node setup'
+}
+
 $addresses = @(Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
     Where-Object { $_.IPAddress -notlike '127.*' -and $_.IPAddress -notlike '169.254.*' } |
     Select-Object -ExpandProperty IPAddress)
@@ -336,11 +558,14 @@ Write-Host ''
 Write-Host '================ Bootstrap summary ================' -ForegroundColor Magenta
 [pscustomobject]@{
     'User'                   = $UserName
+    'Roles'                  = $Roles
     'sshd'                   = (Get-Service sshd).Status
-    'Firewall rule'          = 'OpenSSH-Server-In-TCP (TCP 22)'
+    'Firewall rules'         = 'OpenSSH-Server-In-TCP (TCP 22)' + $(if (Test-RoleEnabled 'gateway') { ', MiddleAgent-Gateway-In-TCP (TCP 8000, tailnet only)' } else { '' })
     'User authorized_keys'   = $keyFiles.User
     'Admin authorized_keys'  = $keyFiles.Admin
     'DefaultShell'           = $shell
+    'Tailscale IP'           = $(if ($tailscaleIp) { $tailscaleIp } else { 'not connected' })
+    'Ollama'                 = $(if ($ollamaReady) { 'running on 127.0.0.1:11434' } else { 'not running' })
     'IPv4 addresses'         = ($addresses -join ', ')
 } | Format-List
 Write-Host "Connect from your Mac:  ssh $UserName@$(if ($addresses) { $addresses[0] } else { '<this-host>' })" -ForegroundColor Green

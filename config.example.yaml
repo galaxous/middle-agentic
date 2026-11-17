@@ -1,0 +1,56 @@
+# middle-agentic node configuration.
+# Copy to config.yaml (or run `magent setup`). Secrets belong in .env, not here.
+# Every value can be overridden by an environment variable (see .env.example).
+
+node:
+  name: macbook-m4            # defaults to the hostname
+  roles: [gateway, llm, client]
+
+gateway:
+  host: 127.0.0.1             # use 0.0.0.0 (or the Tailscale IP) to serve other devices
+  port: 8000
+  request_timeout: 60
+
+memory:
+  enabled: true
+  db_path: agent_memory.db    # relative to the project directory
+  recent_limit: 6
+  related_limit: 4
+  snippet_chars: 500
+
+# The node's own local model server (role: llm).
+# runtime: ollama | llamacpp | vllm | lmstudio
+llm:
+  runtime: ollama
+  model: qwen2.5:3b
+  # api_base: http://127.0.0.1:11434
+
+# Fallback chain, tried top to bottom. Clients pick with the OpenAI `model` field:
+#   "auto" -> whole chain, a tier name ("local") -> that tier, a label ("free") -> those tiers.
+# runtime: ollama | llamacpp | vllm | lmstudio | openai | anthropic | gemini | openrouter |
+#          groq | mistral | deepseek | litellm (model passed to LiteLLM untouched)
+# Omit `chain` entirely to get this default (with `local` following the llm section).
+chain:
+  - { name: gemini-flash,    tier: free,  runtime: gemini,     model: gemini-2.5-flash }
+  - { name: openrouter-free, tier: free,  runtime: openrouter, model: openrouter/free }
+  - { name: local,           tier: local, runtime: ollama,     model: qwen2.5:3b }
+  - { name: luna,            tier: paid,  runtime: openai,     model: gpt-6-luna }
+  # - { name: claude-haiku, tier: paid, runtime: anthropic, model: claude-haiku-4-5 }
+  # - { name: llama-cpp,    tier: local, runtime: llamacpp, model: local, api_base: http://127.0.0.1:8080/v1 }
+  # - { name: vllm,         tier: local, runtime: vllm,     model: Qwen/Qwen2.5-7B-Instruct, api_base: http://127.0.0.1:8001/v1 }
+  # - { name: lmstudio,     tier: local, runtime: lmstudio, model: qwen2.5-7b-instruct }
+
+# Other nodes this client can talk to. Tailscale peers are discovered automatically;
+# static entries are useful for non-tailnet hosts or fixed aliases.
+peers: []
+#  - { name: acer, url: http://acer-worker:8000 }
+#  - { name: pi,   url: http://100.64.0.12:8000, api_key_env: PI_GATEWAY_KEY }
+
+discovery:
+  tailscale: true
+  port: 8000
+  probe_timeout: 1.5
+
+client:
+  default_node: null          # node used by `magent ask` / SDK / MCP when none is given
+  timeout: 120

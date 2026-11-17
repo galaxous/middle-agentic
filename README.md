@@ -1,209 +1,291 @@
 # middle-agentic
 
-Windows, Linux (Ubuntu/Debian/Raspberry Pi OS/Fedora/RHEL) ve macOS makineleri tek komutla
-**SSH ile yönetilebilir worker node**'lara dönüştüren ve üzerlerinde OpenAI uyumlu bir
-**Middle-Agent Gateway** çalıştıran cross-platform otomasyon reposu.
+Windows, Linux (Ubuntu/Debian/Raspberry Pi OS/Fedora/RHEL) ve macOS cihazlarını tek komutla **middle-agent node**'larına dönüştüren cross-platform repo. Her cihaz aynı repoyu kurar ve rollerini seçer:
 
-- **Bootstrap**: OpenSSH sunucusu, firewall, kullanıcı, `authorized_keys` ve sıkı dosya izinleri, Python venv.
-- **Gateway**: FastAPI + LiteLLM. Ücretsiz katmanlardan başlayıp kota bittiğinde ucuz ücretli katmana geçen otomatik fallback zinciri.
-- **Graph Memory**: SQLite üzerinde node/edge tabanlı hafıza. İstek öncesinde bağlam enjekte eden bir pre-hook, yanıt gönderildikten sonra asenkron kayıt yapan bir post-hook.
+| Rol | Ne yapar |
+| --- | --- |
+| `gateway` | OpenAI uyumlu API, fallback zinciri, graph memory, hafıza ve hook API'leri. Arka plan servisi olarak çalışır. |
+| `llm` | Yerel model sunucusu (varsayılan Ollama; llama.cpp, vLLM ve LM Studio da seçilebilir). Yalnızca `127.0.0.1` üzerinde dinler. |
+| `client` | Başka node'lara prompt ve hook gönderen taraf: `magent` CLI, Python SDK, MCP server, Cursor/Claude Code hook'ları. |
+
+Cihazlar birbirini **Tailscale** ağı (tailnet) üzerinden bulur. İstekler `Bearer` API anahtarıyla korunur.
 
 ## Mimari
 
 ```mermaid
 flowchart LR
-    bootstrapPy["bootstrap.py"] -->|Windows| winPs["bootstrap-windows.ps1"]
-    bootstrapPy -->|"Linux / macOS"| unixSh["bootstrap-unix.sh"]
-    bootstrapPy -->|"--git"| gitStep["git init + commit + gh repo create"]
-    client["OpenAI uyumlu istemci"] --> gateway["gateway.py /v1/chat/completions"]
-    gateway --> preHook["pre-hook: graph memory bağlamı"]
-    preHook --> chain["Fallback zinciri"]
-    chain --> gemini["free: gemini/gemini-2.5-flash"]
-    chain --> orFree["free: openrouter/openrouter/free"]
-    chain --> luna["paid: openai/gpt-6-luna"]
-    chain --> postHook["post-hook: BackgroundTasks"]
-    postHook --> db[("agent_memory.db")]
+    subgraph macbook [MacBook M4 Pro: client]
+        cli["magent CLI / SDK"]
+        mcp["MCP server"]
+        hooks["Cursor / Claude hook'ları"]
+    end
+    subgraph acer [Acer veya Pi: gateway + llm]
+        gw["Gateway :8000"]
+        mem[("agent_memory.db")]
+        ollama["Ollama 127.0.0.1:11434"]
+    end
+    cloud["Gemini / OpenRouter / GPT Luna"]
+    cli -->|"Tailscale + Bearer"| gw
+    mcp --> gw
+    hooks -->|"/v1/hooks/*"| gw
+    gw --> mem
+    gw -->|"fallback zinciri"| cloud
+    gw --> ollama
 ```
 
-| Dosya | Görev |
-| --- | --- |
-| `bootstrap.py` | İşletim sistemini algılar, uygun scripti çalıştırır (Windows'ta UAC ile yükseltir), `--git` ile repo kurar |
-| `bootstrap-windows.ps1` | OpenSSH.Server, firewall, `sshuser`, `authorized_keys` + `administrators_authorized_keys`, icacls, DefaultShell |
-| `bootstrap-unix.sh` | apt/dnf/yum/brew ile paketler, SSH servisi, `~/.ssh` 700/600, venv |
-| `gateway.py` | FastAPI gateway, fallback zinciri, SQLite graph memory |
+Varsayılan zincir önce bulutu dener: `gemini-2.5-flash` > `openrouter/free` > yerel Ollama > `gpt-6-luna`. Anahtarı tanımlı olmayan bulut katmanları ve çalışmayan ya da modeli indirilmemiş yerel katmanlar otomatik atlanır.
 
-## Gereksinimler
+## Hızlı kurulum
 
-- **Windows**: Windows 10 1809+ / Windows 11, yönetici yetkisi. Python sadece `bootstrap.py` ve gateway için gerekir.
-- **Linux/macOS**: `bash`, `sudo`. Python 3.9+ eksikse script kendisi kurar.
-- Bağlanacak makinenin (ör. MacBook) public key'i: `cat ~/.ssh/id_ed25519.pub`. Key yoksa `ssh-keygen -t ed25519` ile oluşturun.
-
-## Hızlı Kurulum
-
-### Windows (yönetici PowerShell)
-
-Repo klonlanmadan, tek satırda:
-
-```powershell
-& ([scriptblock]::Create((irm https://raw.githubusercontent.com/galaxous/middle-agentic/main/bootstrap-windows.ps1))) -PublicKey "ssh-ed25519 AAAA... me@macbook"
-```
-
-> Düz `irm ... | iex` parametre geçiremez. Bu yüzden yukarıdaki `scriptblock` kalıbı kullanılır.
-
-Parametreler:
-
-```powershell
--UserName sshuser             # varsayılan: sshuser
--DefaultShell PowerShell      # PowerShell | GitBash | None
--Password (Read-Host -AsSecureString)   # verilmezse güçlü rastgele parola üretilip bir kez gösterilir
-```
-
-Repo klonlanmışsa:
-
-```powershell
-git clone https://github.com/galaxous/middle-agentic.git; cd middle-agentic
-python bootstrap.py --pubkey "ssh-ed25519 AAAA... me@macbook" --shell GitBash
-```
-
-`ExecutionPolicy` engeline takılırsanız: `Set-ExecutionPolicy -Scope Process Bypass`.
+Her cihazda bağlanacak makinenin (ör. MacBook) public key'i gerekir: `cat ~/.ssh/id_ed25519.pub`. Key yoksa `ssh-keygen -t ed25519` ile oluşturun. Tailscale auth key'i [admin panelinden](https://login.tailscale.com/admin/settings/keys) alabilirsiniz; verilmezse kurulumdan sonra `tailscale up` ile elle bağlanırsınız.
 
 ### Linux / macOS / Raspberry Pi
 
-Tek satırda:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/galaxous/middle-agentic/main/bootstrap-unix.sh | bash -s -- --pubkey "ssh-ed25519 AAAA... me@macbook"
-```
-
-> Pipe ile çalıştırıldığında venv, mevcut dizinde `requirements.txt` varsa kurulur. Tam kurulum için repoyu klonlayın.
-
-Repo ile:
-
 ```bash
 git clone https://github.com/galaxous/middle-agentic.git && cd middle-agentic
-python3 bootstrap.py --pubkey "ssh-ed25519 AAAA... me@macbook"
-# veya doğrudan
-./bootstrap-unix.sh --pubkey "ssh-ed25519 AAAA..." [--skip-packages] [--skip-venv]
+python3 bootstrap.py --pubkey "ssh-ed25519 AAAA... me@macbook" \
+  --roles gateway,llm --ts-authkey tskey-auth-... --model qwen2.5:3b
 ```
 
-### Bağlantı testi
+Script şu adımları uygular:
+
+1. Sistem paketlerini kurar (git, sqlite, curl ve Python 3.10+).
+2. SSH'ı açar, `~/.ssh` (700) ve `authorized_keys` (600) dosyalarını hazırlar.
+3. Tailscale'i kurar ve auth key verildiyse ağa katılır.
+4. `llm` rolünde Ollama'yı kurar ve başlatır.
+5. `./venv` içine `pip install -e .` ile paketi kurar ve `magent setup` ile `config.yaml` ve `.env` dosyalarını yazar.
+6. `llm` rolünde modeli indirir.
+7. `gateway` rolünde gateway'i servis olarak kaydeder (Linux'ta systemd user unit, macOS'ta launchd). Linux'ta firewall aktifse 8000 portunu yalnızca tailnet adreslerine (`100.64.0.0/10`) açar.
+
+Repoyu klonlamadan yalnızca SSH, Tailscale ve Ollama kurmak için:
 
 ```bash
-ssh sshuser@<windows-ip>      # Windows worker
-ssh <kullanici>@<linux-ip>    # Linux / macOS
+curl -fsSL https://raw.githubusercontent.com/galaxous/middle-agentic/main/scripts/bootstrap-unix.sh | bash -s -- --pubkey "ssh-ed25519 AAAA..." --roles llm
 ```
 
-## Middle-Agent Gateway
+> Raspberry Pi'de Ollama 64-bit OS ister (aarch64). 32-bit sistemde `llm` adımı uyarıyla atlanır; o cihaz bulut katmanlarıyla gateway olarak çalışmaya devam eder.
+
+### Windows 10/11 (Acer worker)
+
+Python 3.10+ yoksa önce `winget install Python.Python.3.12` ile kurun. Ardından:
+
+```powershell
+git clone https://github.com/galaxous/middle-agentic.git; cd middle-agentic
+py -3.12 bootstrap.py --pubkey "ssh-ed25519 AAAA... me@macbook" --roles gateway,llm --ts-authkey tskey-auth-...
+```
+
+`bootstrap.py` önce venv'i kurar, ardından UAC ile yönetici PowerShell açar. `scripts/bootstrap-windows.ps1` şunları yapar:
+
+- **SSH:** OpenSSH Server, firewall, `sshuser`, BOM'suz `authorized_keys` ve `icacls` izinleri.
+- **Ağ ve model:** Tailscale (`--unattended`) ve Ollama, ikisi de winget ile kurulur.
+- **Gateway:** 8000 portu yalnızca tailnet adreslerine açılır. Gateway, açılışta SYSTEM olarak çalışan bir Scheduled Task olarak kaydedilir.
+
+Repoyu klonlamadan yalnızca SSH, Tailscale ve Ollama kurmak için yönetici PowerShell'de:
+
+```powershell
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/galaxous/middle-agentic/main/scripts/bootstrap-windows.ps1))) -PublicKey "ssh-ed25519 AAAA..." -Roles llm -TsAuthKey tskey-auth-...
+```
+
+> Ollama for Windows kullanıcı oturumu açıldığında başlar. Başsız bir worker'da otomatik oturum açmayı etkinleştirin, aksi halde yerel katman biri giriş yapana kadar atlanır (zincir buluta düşer).
+
+### İstemci cihaz (MacBook)
 
 ```bash
-cp .env.example .env          # anahtarları doldurun
-./venv/bin/uvicorn gateway:app --host 0.0.0.0 --port 8000      # Windows: .\venv\Scripts\uvicorn ...
+python3 bootstrap.py --pubkey "$(cat ~/.ssh/id_ed25519.pub)" --roles client --ts-authkey tskey-auth-...
+echo "MAGENT_API_KEY=<gateway kurulumunda üretilen anahtar>" >> .env
+./venv/bin/magent nodes
 ```
 
-> `0.0.0.0` ile LAN'a açıyorsanız `.env` içinde `GATEWAY_API_KEY` tanımlayın. Aksi halde ağdaki herkes sizin API anahtarlarınızla istek atabilir.
+Gateway kurulumu `.env` içinde `GATEWAY_API_KEY` üretir ve ekrana yazar. Aynı değeri istemcilerde `MAGENT_API_KEY` olarak tanımlayın.
 
-| Endpoint | Açıklama |
+### Bootstrap bayrakları
+
+| `bootstrap.py` | Açıklama |
 | --- | --- |
-| `GET /health` | Zincirdeki katmanların hazır olup olmadığı ve hafıza istatistikleri |
-| `GET /v1/models` | OpenAI formatında model listesi |
-| `POST /v1/chat/completions` | OpenAI uyumlu chat (v1'de `stream=false`) |
+| `--roles gateway,llm,client` | Kurulacak roller (varsayılan: hepsi) |
+| `--ts-authkey KEY` | Tailscale'e otomatik katılım |
+| `--model qwen2.5:3b` | `llm` rolünün modeli |
+| `--user`, `--shell` | Windows SSH kullanıcısı ve DefaultShell (`PowerShell`, `GitBash`, `None`) |
+| `--skip-packages`, `--skip-tailscale`, `--skip-llm`, `--skip-venv`, `--skip-service` | İlgili adımı atlar |
+| `--git [--no-push]` | `git init`, commit ve `gh repo create` |
 
-```bash
-curl -s http://localhost:8000/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $GATEWAY_API_KEY" \
-  -H "X-Session-Id: macbook-m4" \
-  -d '{"model": "middle-agent", "messages": [{"role": "user", "content": "Merhaba!"}]}' -i
+## Yapılandırma
+
+| Dosya | İçerik |
+| --- | --- |
+| `config.yaml` | Node adı, roller, zincir, peer listesi. `magent setup` yazar; şablon için `config.example.yaml` dosyasına bakın. |
+| `.env` | API anahtarları ve host'a özel değerler. Şablon: `.env.example`. |
+
+Ortam değişkenleri her zaman `config.yaml` değerlerinin önüne geçer. Eski `MODEL_CHAIN` değişkeni hâlâ desteklenir ve tanımlıysa `chain` bölümünün yerine kullanılır.
+
+Zincir örneği:
+
+```yaml
+chain:
+  - { name: gemini-flash,    tier: free,  runtime: gemini,     model: gemini-2.5-flash }
+  - { name: openrouter-free, tier: free,  runtime: openrouter, model: openrouter/free }
+  - { name: local,           tier: local, runtime: ollama,     model: qwen2.5:3b }
+  - { name: luna,            tier: paid,  runtime: openai,     model: gpt-6-luna }
 ```
 
-Yanıt header'ları:
+| `runtime` | LiteLLM karşılığı | Kullanılabilirlik kontrolü |
+| --- | --- | --- |
+| `ollama` | `ollama_chat/` | `GET /api/tags` ve modelin indirilmiş olması |
+| `llamacpp` | `openai/` + `api_base` | `GET /v1/models` |
+| `vllm` | `hosted_vllm/` | `GET /v1/models` |
+| `lmstudio` | `lm_studio/` | `GET /v1/models` |
+| `openai`, `anthropic`, `gemini`, `openrouter`, `groq`, `mistral`, `deepseek` | aynı adlı önek | API anahtarı ortam değişkeni |
+| `litellm` | model dizesi olduğu gibi | yok |
 
-- `X-Gateway-Model`: isteği gerçekte cevaplayan model.
-- `X-Gateway-Tier`: `free` / `paid`.
-- `X-Gateway-Session`: kullanılan oturum kimliği.
-- `X-Gateway-Attempts`: denenen katman sayısı.
+Yerel OpenAI uyumlu sunuculara gerçek `OPENAI_API_KEY` asla gönderilmez; bunun yerine sabit bir yer tutucu anahtar kullanılır.
 
-Tüm katmanlar başarısız olursa `503` döner ve gövdede her denemenin sebebi listelenir.
+## İstemci araçları
 
-OpenAI SDK ile:
+### CLI
+
+```bash
+magent nodes                                   # yerel + config peer'ları + Tailscale node'ları
+magent ask "Bu hatayı açıkla" --node acer      # zincir (auto)
+magent ask "..." --node acer --model local --stream
+magent ask "..." --model free --no-memory      # yalnızca free katmanları, hafızasız
+magent hook record "Postgres'e geçmeye karar verdik" --role decision
+magent hook context "veritabanı kararı"
+magent health --node acer
+magent llm pull qwen2.5:7b | list | status
+magent serve                                   # gateway'i ön planda çalıştır
+magent service install | uninstall | status
+magent integrate cursor | claude [--scope project] [--url http://acer:8000]
+magent mcp                                     # MCP server (stdio)
+```
+
+`--node` şu değerleri kabul eder: `config.yaml` içindeki bir peer adı, bir Tailscale cihaz adı, bir URL veya `local`. Verilmezse `MAGENT_URL`, ardından `client.default_node` ve en son yerel gateway kullanılır.
+
+`--model` şu değerleri kabul eder: `auto` (tüm zincir), bir katman adı (`local`, `luna`) veya bir etiket (`free`, `local`, `paid`). Bu bir allowlist'tir; tanımsız model adları `400` döner.
+
+Hafıza oturumu varsayılan olarak bulunduğunuz projeye bağlıdır. Hook'lar ve MCP server da aynı oturumu kullanır, `--session` ile değiştirilebilir.
+
+### Python SDK
+
+```python
+from middle_agentic.client import MiddleAgentClient
+
+with MiddleAgentClient(node="acer", session_id="research") as client:
+    result = client.ask("Fallback zinciri nedir?", model="local")
+    print(result.text, result.tier_name, result.model)
+
+    for delta in client.stream("Bir haiku yaz"):
+        print(delta, end="", flush=True)
+
+    client.record_event("Release her salı çıkar", role="fact")
+    print(client.context("release günü")["context"])
+```
+
+### OpenAI uyumlu kullanım
 
 ```python
 from openai import OpenAI
 
-client = OpenAI(base_url="http://localhost:8000/v1", api_key="<GATEWAY_API_KEY veya herhangi bir değer>")
+client = OpenAI(base_url="http://acer:8000/v1", api_key="<GATEWAY_API_KEY>")
 reply = client.chat.completions.create(
-    model="middle-agent",
+    model="auto",
     messages=[{"role": "user", "content": "Selam"}],
     extra_headers={"X-Session-Id": "macbook-m4"},
 )
 ```
 
-### Fallback zinciri
+### Cursor ve Claude Code
 
-`MODEL_CHAIN` ortam değişkeni ile kod değiştirmeden yönetilir:
-
-```env
-MODEL_CHAIN=free:gemini/gemini-2.5-flash,free:openrouter/openrouter/free,paid:openai/gpt-6-luna
+```bash
+magent integrate cursor     # ~/.cursor/hooks.json + ~/.cursor/mcp.json
+magent integrate claude     # ~/.claude/settings.json + claude mcp add --scope user
 ```
 
-Zincirin işleyişi:
+| Araç | Hook | Davranış |
+| --- | --- | --- |
+| Cursor | `sessionStart` | Projenin son hafızası `additional_context` olarak eklenir |
+| Cursor | `beforeSubmitPrompt` | Prompt kaydedilir (her zaman `continue: true`) |
+| Cursor | `afterAgentResponse` | Yanıt kaydedilir |
+| Claude Code | `SessionStart` | Projenin son hafızası `additionalContext` olarak eklenir |
+| Claude Code | `UserPromptSubmit` | Prompt'la ilgili hafıza `additionalContext` olarak eklenir, ardından prompt kaydedilir |
+| Claude Code | `Stop` | `last_assistant_message` kaydedilir |
 
-- Katmanlar sırayla denenir.
-- API anahtarı tanımlı olmayan sağlayıcılar atlanır.
-- Şu hatalarda bir sonraki katmana geçilir: rate limit / kota, servis kesintisi, bağlantı hatası, timeout, kimlik doğrulama hatası, bulunamayan model, geçersiz istek.
-- İstemcinin gönderdiği `model` alanı yok sayılır. Hangi modelin cevapladığı `X-Gateway-Model` header'ından görülür.
-- İstemci parametrelerinden yalnızca güvenli olanlar sağlayıcıya iletilir (`temperature`, `max_tokens`, `tools` vb.). `api_key` ve `api_base` gibi alanlar düşürülür.
+Cursor bağlamı yalnızca oturum başında enjekte edebilir. Prompt bazlı bağlam için Cursor'daki agent MCP aracı `memory_search`'ü kullanır. MCP server şu araçları sunar: `ask`, `memory_search`, `memory_record`, `list_nodes`.
 
-### Graph Memory
+Hook scripti (`integrations/hooks/magent_hook.py`) yalnızca standart kütüphaneyi kullanır ve **fail-open** çalışır: gateway kapalıysa ya da yavaşsa nötr bir cevap döner ve agent hiç beklemez. Gizli anahtarlar yapılandırma dosyalarına yazılmaz; script bunları reponun `.env` dosyasından okur. Detaylar için [`integrations/README.md`](integrations/README.md) dosyasına bakın.
+
+## Gateway API
+
+| Endpoint | Açıklama |
+| --- | --- |
+| `GET /health` | Node adı, roller, zincirdeki katmanların durumu, hafıza istatistikleri. Kimlik doğrulama istemez; keşif için kullanılır. |
+| `GET /v1/models` | `auto` ve zincirdeki katmanlar |
+| `POST /v1/chat/completions` | OpenAI uyumlu chat. `stream: true` desteklenir. |
+| `POST /v1/memory/context` | `{session_id, query, recent_limit?, related_limit?}` alır, bağlam düğümlerini ve hazır metni döner (pre-hook) |
+| `POST /v1/memory/events` | `{session_id, role, content, metadata?, link_to?, relation?}` alır ve düğüm ekler (post-hook) |
+| `GET /v1/memory/sessions` | Oturum listesi |
+| `GET /v1/memory/sessions/{id}` | Oturumun grafı (düğümler ve kenarlar) |
+| `POST /v1/hooks/{cursor\|claude}/{event}` | Aracın ham hook payload'unu alır, aracın beklediği formatta cevap döner |
+
+Chat yanıt header'ları:
+
+- `X-Gateway-Node`: yanıtı veren node.
+- `X-Gateway-Tier-Name` ve `X-Gateway-Tier`: katman adı ve etiketi.
+- `X-Gateway-Model`: kullanılan model.
+- `X-Gateway-Session`: hafıza oturumu.
+- `X-Gateway-Attempts`: denenen katman sayısı.
+
+İstek header'ları:
+
+- `X-Session-Id`: hafıza oturumunu seçer.
+- `X-Memory: off`: istek bazında hafızayı kapatır.
+
+Streaming'de fallback yalnızca ilk chunk gelmeden önce yapılır. Stream ortasında oluşan bir hata, SSE içinde `error` olayı olarak iletilir.
+
+### Graph memory
 
 `agent_memory.db` (SQLite, WAL modu):
 
 ```text
 nodes(id, session_id, role, content, metadata, created_at)
-edges(src_id, dst_id, relation, created_at)   -- relation: follows | responded_by
+edges(src_id, dst_id, relation, created_at)   -- follows | responded_by | özel ilişkiler
 ```
 
-- **pre-hook**: Oturumun son `MEMORY_RECENT_LIMIT` düğümü ile son kullanıcı mesajındaki anahtar kelimelerle eşleşen düğümler alınır. Eşleşen düğümlerin `responded_by` komşuları da eklenir (tek adımlı graph genişletmesi). Sonuç, istemcinin system prompt'larından hemen sonra bir `system` mesajı olarak enjekte edilir.
-- **post-hook**: Yanıt gönderildikten sonra `BackgroundTasks` ile kullanıcı ve asistan düğümleri ile kenarlar yazılır. Hafıza hataları isteği asla bozmaz.
-- Oturum `X-Session-Id` header'ı ile seçilir (varsayılan: `default`). İstek bazında kapatmak için `X-Memory: off` gönderin, tamamen kapatmak için `MEMORY_ENABLED=false` ayarlayın.
+- **pre-hook:** Oturumun son düğümleri alınır, ardından anahtar kelimeyle eşleşen düğümler ve bunların `responded_by` komşuları eklenir. Sonuç, istemcinin system prompt'larından hemen sonra bir `system` mesajı olarak enjekte edilir.
+- **post-hook:** Yanıt gönderildikten sonra arka planda yazılır. Hafıza hataları isteği asla bozmaz.
 
-## Git ve GitHub
+## Geliştirme
 
 ```bash
-python3 bootstrap.py --skip-bootstrap --git
+python3.12 -m venv venv && ./venv/bin/pip install -e ".[dev]"
+./venv/bin/pytest
 ```
 
-Bu komut şunları yapar:
+Testler LiteLLM'i mock'lar. SDK, MCP server ve hook scripti gerçek bir uvicorn sunucusuna karşı ayrı process'lerde test edilir. `uvicorn gateway:app` geriye uyumluluk için hâlâ çalışır.
 
-- Proje dizininde `.git` yoksa `git init -b main` çalıştırır. Kontrol bilinçli olarak `.git` klasörüne bakılarak yapılır, böylece üst dizindeki bir repo yanlışlıkla kullanılmaz.
-- `git add .` ve `chore: initial bootstrap & middle-agent gateway setup` mesajıyla commit atar.
-- `gh` kurulu ve oturum açıksa `gh repo create galaxous/middle-agentic --public --source . --remote origin --push` çalıştırır. Değilse aynı komutu talimat olarak yazdırır.
-
-İlk yayın MCP üzerinden yapıldıysa yerel commit uzak commit'ten farklı olabilir. Hizalamak için:
-
-```bash
-git remote add origin https://github.com/galaxous/middle-agentic.git   # yoksa
-git fetch origin && git reset --soft origin/main && git branch -u origin/main
-```
-
-## Sorun Giderme
+## Sorun giderme
 
 **Windows'ta key olmasına rağmen parola soruluyor (`Permission denied (publickey)`):**
 
-- Kullanıcı `Administrators` grubundaysa sshd, `C:\ProgramData\ssh\administrators_authorized_keys` dosyasını okur. `~\.ssh\authorized_keys` dikkate alınmaz. Script her iki dosyayı da yazar.
-- Dosya izinleri yalnızca `Administrators` ve `SYSTEM` için olmalıdır. Kontrol için: `icacls C:\ProgramData\ssh\administrators_authorized_keys`.
-- Dosya UTF-8 **BOM'suz** olmalıdır. PowerShell 5.1'deki `echo key > file` komutu UTF-16 yazar ve sshd anahtarı tanımaz. Script dosyayı .NET üzerinden BOM'suz yazar.
-- Dosyanın uzantısı olmamalıdır (`authorized_keys.txt` değil). Script `.txt` kalıntılarını siler.
+- Kullanıcı `Administrators` grubundaysa sshd `C:\ProgramData\ssh\administrators_authorized_keys` dosyasını okur. Script her iki dosyayı da yazar.
+- İzinler yalnızca `Administrators` ve `SYSTEM` için olmalıdır: `icacls C:\ProgramData\ssh\administrators_authorized_keys`.
+- Dosya UTF-8 **BOM'suz** olmalı ve uzantısı olmamalıdır. Script her ikisini de garanti eder.
 - Log'lar: `Get-WinEvent -LogName OpenSSH/Operational -MaxEvents 20`.
 
-**Linux/macOS'ta `Permission denied`:**
+**Linux/macOS'ta `Permission denied`:** `~/.ssh` izni `700`, `authorized_keys` izni `600` olmalı ve ev dizini başkaları tarafından yazılabilir olmamalıdır (`chmod go-w ~`).
 
-- `~/.ssh` izni `700`, `authorized_keys` izni `600` olmalıdır. Ev dizini de başkaları tarafından yazılabilir olmamalıdır: `chmod go-w ~`.
+**`magent nodes` başka cihazı göstermiyor:**
 
-**macOS'ta Remote Login açılmadı:**
-
-- Terminale Full Disk Access verin veya System Settings > General > Sharing > Remote Login yolundan elle açın.
+- `tailscale status` ile iki cihazın da tailnet'te olduğunu doğrulayın.
+- Gateway node'unda `config.yaml` içindeki `gateway.host` değeri `0.0.0.0` olmalıdır (`magent setup` bunu ayarlar).
+- Firewall'un 8000 portunu tailnet'ten kabul ettiğini kontrol edin.
+- `magent nodes --all` probe edilemeyen cihazları da listeler.
 
 **Gateway `503 all_tiers_failed` dönüyor:**
 
-- Gövdedeki `attempts` listesine bakın. Muhtemelen API anahtarı tanımlı değil (`skipped`) veya model adı sağlayıcıda yok (`NotFoundError`). `/health` endpoint'i her katmanın durumunu gösterir.
+- Gövdedeki `attempts` listesi her katmanın neden atlandığını gösterir: anahtar eksik, Ollama kapalı, model indirilmemiş ya da sağlayıcı hatası.
+- `magent health` aynı bilgiyi gösterir.
+
+**Servis çalışıyor ama `/health` cevap vermiyor:** LiteLLM'in yüklenmesi ilk açılışta 10-15 saniye sürer. Log'lar:
+
+- macOS: `~/Library/Logs/magent-gateway.log`
+- Linux: `journalctl --user -u magent-gateway -f`

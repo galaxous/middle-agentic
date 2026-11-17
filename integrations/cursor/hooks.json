@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "hooks": {
+    "sessionStart": [
+      { "command": "\"/path/to/middle-agentic/venv/bin/python\" \"/path/to/middle-agentic/integrations/hooks/magent_hook.py\" cursor", "timeout": 10 }
+    ],
+    "beforeSubmitPrompt": [
+      { "command": "\"/path/to/middle-agentic/venv/bin/python\" \"/path/to/middle-agentic/integrations/hooks/magent_hook.py\" cursor", "timeout": 10 }
+    ],
+    "afterAgentResponse": [
+      { "command": "\"/path/to/middle-agentic/venv/bin/python\" \"/path/to/middle-agentic/integrations/hooks/magent_hook.py\" cursor", "timeout": 10 }
+    ]
+  }
+}

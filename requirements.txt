@@ -1,4 +1,9 @@
+# Runtime dependencies for running gateway.py without installing the package.
+# The source of truth is pyproject.toml; prefer `pip install -e .`.
 fastapi>=0.115.0
 uvicorn[standard]>=0.30.0
 litellm>=1.55.0
+httpx>=0.27.0
+pyyaml>=6.0
 requests>=2.32.0
+mcp>=1.2.0

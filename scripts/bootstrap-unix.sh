@@ -8,11 +8,14 @@
 #   2. Enables the SSH service (systemd on Linux, Remote Login on macOS) and opens the firewall
 #      when ufw/firewalld is active.
 #   3. Creates ~/.ssh (700) and ~/.ssh/authorized_keys (600), appending --pubkey if given.
-#   4. Creates ./venv in the project directory and installs requirements.txt quietly.
+#   4. Installs Tailscale and joins the tailnet when --ts-authkey is given.
+#   5. Role "llm": installs Ollama, starts it (127.0.0.1 only) and pulls --model.
+#   6. Creates ./venv with Python 3.10+ and installs the middle_agentic package (pip install -e).
+#   7. Writes config.yaml/.env via `magent setup`; role "gateway": registers the gateway service.
 #
 # Usage:
-#   ./bootstrap-unix.sh --pubkey "ssh-ed25519 AAAA... me@macbook"
-#   curl -fsSL https://raw.githubusercontent.com/galaxous/middle-agentic/main/bootstrap-unix.sh | bash -s -- --pubkey "ssh-ed25519 AAAA..."
+#   ./scripts/bootstrap-unix.sh --pubkey "ssh-ed25519 AAAA... me@macbook" --roles gateway,llm --ts-authkey tskey-auth-...
+#   curl -fsSL https://raw.githubusercontent.com/galaxous/middle-agentic/main/scripts/bootstrap-unix.sh | bash -s -- --pubkey "ssh-ed25519 AAAA..."
 #
 # Compatible with bash 3.2 (default macOS bash).
 
@@ -20,8 +23,15 @@ set -euo pipefail
 
 PUBKEY=""
 PROJECT_DIR=""
+ROLES="gateway,llm,client"
+TS_AUTHKEY=""
+LLM_MODEL=""
 SKIP_PACKAGES=0
 SKIP_VENV=0
+SKIP_TAILSCALE=0
+SKIP_LLM=0
+SKIP_SERVICE=0
+PYTHON_BIN=""
 
 # ------------------------------------------------------------------ output helpers
 if [[ -t 1 ]]; then
@@ -40,31 +50,52 @@ Usage: bootstrap-unix.sh [options]
 
 Options:
   --pubkey "<key>"       OpenSSH public key to append to ~/.ssh/authorized_keys
-  --project-dir <path>   Directory containing requirements.txt (default: script directory)
+  --roles <list>         Node roles: gateway,llm,client (default: all three)
+  --ts-authkey <key>     Tailscale auth key; joins the tailnet non-interactively
+  --model <name>         Local model for the llm role (default: qwen2.5:3b)
+  --project-dir <path>   Repository root containing pyproject.toml (default: auto-detected)
   --skip-packages        Do not install system packages
+  --skip-tailscale       Do not install/configure Tailscale
+  --skip-llm             Do not install Ollama even if the llm role is set
   --skip-venv            Do not create the Python virtual environment
+  --skip-service         Do not register the gateway as a background service
   -h, --help             Show this help
 EOF
 }
 
 # ------------------------------------------------------------------ argument parsing
+require_value() { [[ $1 -ge 2 ]] || die "$2 requires a value"; }
+
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --pubkey)        [[ $# -ge 2 ]] || die "--pubkey requires a value"; PUBKEY="$2"; shift 2 ;;
-        --pubkey=*)      PUBKEY="${1#*=}"; shift ;;
-        --project-dir)   [[ $# -ge 2 ]] || die "--project-dir requires a value"; PROJECT_DIR="$2"; shift 2 ;;
-        --project-dir=*) PROJECT_DIR="${1#*=}"; shift ;;
-        --skip-packages) SKIP_PACKAGES=1; shift ;;
-        --skip-venv)     SKIP_VENV=1; shift ;;
-        -h|--help)       usage; exit 0 ;;
-        *)               usage; die "Unknown option: $1" ;;
+        --pubkey)         require_value $# "$1"; PUBKEY="$2"; shift 2 ;;
+        --pubkey=*)       PUBKEY="${1#*=}"; shift ;;
+        --roles)          require_value $# "$1"; ROLES="$2"; shift 2 ;;
+        --roles=*)        ROLES="${1#*=}"; shift ;;
+        --ts-authkey)     require_value $# "$1"; TS_AUTHKEY="$2"; shift 2 ;;
+        --ts-authkey=*)   TS_AUTHKEY="${1#*=}"; shift ;;
+        --model)          require_value $# "$1"; LLM_MODEL="$2"; shift 2 ;;
+        --model=*)        LLM_MODEL="${1#*=}"; shift ;;
+        --project-dir)    require_value $# "$1"; PROJECT_DIR="$2"; shift 2 ;;
+        --project-dir=*)  PROJECT_DIR="${1#*=}"; shift ;;
+        --skip-packages)  SKIP_PACKAGES=1; shift ;;
+        --skip-tailscale) SKIP_TAILSCALE=1; shift ;;
+        --skip-llm)       SKIP_LLM=1; shift ;;
+        --skip-venv)      SKIP_VENV=1; shift ;;
+        --skip-service)   SKIP_SERVICE=1; shift ;;
+        -h|--help)        usage; exit 0 ;;
+        *)                usage; die "Unknown option: $1" ;;
     esac
 done
+
+has_role() { [[ ",$ROLES," == *",$1,"* ]]; }
 
 # When piped through `curl | bash`, BASH_SOURCE is empty: fall back to the current directory.
 if [[ -z "$PROJECT_DIR" ]]; then
     if [[ -n "${BASH_SOURCE[0]:-}" && -f "${BASH_SOURCE[0]}" ]]; then
         PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+        # The script lives in <repo>/scripts; the package root is one level up.
+        [[ -f "$PROJECT_DIR/../pyproject.toml" ]] && PROJECT_DIR="$(cd "$PROJECT_DIR/.." && pwd)"
     else
         PROJECT_DIR="$PWD"
     fi
@@ -96,6 +127,15 @@ else
 fi
 TARGET_HOME="${TARGET_HOME:-$HOME}"
 TARGET_GROUP="$(id -gn "$TARGET_USER")"
+
+# venv, config and user services must be owned by / registered for the human user.
+run_as_user() {
+    if [[ "$(id -u)" -eq 0 && "$TARGET_USER" != "root" ]]; then
+        sudo -u "$TARGET_USER" -H "$@"
+    else
+        "$@"
+    fi
+}
 
 # ------------------------------------------------------------------ package management
 PKG_MANAGER=""
@@ -143,10 +183,10 @@ detect_package_manager() {
 
 required_packages() {
     case "$PKG_MANAGER" in
-        apt)     echo "openssh-server git sqlite3 python3 python3-venv python3-pip" ;;
-        dnf|yum) echo "openssh-server git sqlite python3 python3-pip" ;;
+        apt)     echo "openssh-server git sqlite3 curl python3 python3-venv python3-pip" ;;
+        dnf|yum) echo "openssh-server git sqlite curl python3 python3-pip" ;;
         # macOS ships its own sshd; brew only provides the tooling.
-        brew)    echo "git sqlite python" ;;
+        brew)    echo "git sqlite python@3.12" ;;
     esac
 }
 
@@ -285,39 +325,172 @@ setup_ssh_dir() {
     ok "Permissions: $ssh_dir=700, authorized_keys=600"
 }
 
-# ------------------------------------------------------------------ Python venv
+# ------------------------------------------------------------------ Tailscale
+tailscale_bin() {
+    if command -v tailscale >/dev/null 2>&1; then
+        command -v tailscale
+    elif [[ -x /Applications/Tailscale.app/Contents/MacOS/Tailscale ]]; then
+        echo /Applications/Tailscale.app/Contents/MacOS/Tailscale
+    fi
+}
+
+setup_tailscale() {
+    step "Configuring Tailscale"
+    local ts
+    ts="$(tailscale_bin)"
+    if [[ -z "$ts" ]]; then
+        if [[ "$OS_NAME" == "Darwin" ]]; then
+            run_brew install --quiet tailscale
+            load_brew_env || true
+            # The Homebrew build ships the daemon separately; register it as a system LaunchDaemon.
+            run_root "$(command -v tailscaled)" install-system-daemon
+        else
+            curl -fsSL https://tailscale.com/install.sh | run_root sh
+        fi
+        ts="$(tailscale_bin)"
+        [[ -n "$ts" ]] || die "Tailscale installation failed"
+        ok "Tailscale installed"
+    else
+        ok "Tailscale already installed ($ts)"
+    fi
+
+    if [[ "$OS_NAME" == "Linux" ]] && command -v systemctl >/dev/null 2>&1; then
+        run_root systemctl enable --now tailscaled >/dev/null 2>&1 || true
+    fi
+
+    if "$ts" status >/dev/null 2>&1; then
+        ok "Connected to tailnet as $("$ts" ip -4 2>/dev/null | head -n 1)"
+    elif [[ -n "$TS_AUTHKEY" ]]; then
+        run_root "$ts" up --authkey "$TS_AUTHKEY" --hostname "$(hostname -s | tr '[:upper:]' '[:lower:]')"
+        ok "Joined tailnet as $("$ts" ip -4 2>/dev/null | head -n 1)"
+    else
+        warn "Tailscale is installed but not connected: run 'sudo tailscale up' or pass --ts-authkey"
+    fi
+}
+
+# ------------------------------------------------------------------ Ollama (role: llm)
+ollama_api_up() {
+    curl -fsS --max-time 2 http://127.0.0.1:11434/api/tags >/dev/null 2>&1
+}
+
+setup_ollama() {
+    step "Installing local LLM runtime (Ollama)"
+    if ! command -v ollama >/dev/null 2>&1; then
+        if [[ "$OS_NAME" == "Darwin" ]]; then
+            run_brew install --quiet ollama
+        else
+            case "$(uname -m)" in
+                armv6l|armv7l)
+                    warn "Ollama needs a 64-bit OS (aarch64); skipping. Use a cloud tier or llama.cpp on this device."
+                    return 0 ;;
+            esac
+            curl -fsSL https://ollama.com/install.sh | run_root sh
+        fi
+        ok "Ollama installed"
+    else
+        ok "Ollama already installed"
+    fi
+
+    if ! ollama_api_up; then
+        if [[ "$OS_NAME" == "Darwin" ]]; then
+            run_brew services start ollama >/dev/null 2>&1 || true
+        elif command -v systemctl >/dev/null 2>&1 && [[ -d /run/systemd/system ]]; then
+            run_root systemctl enable --now ollama >/dev/null 2>&1 || true
+        else
+            run_as_user nohup ollama serve >/tmp/ollama.log 2>&1 &
+        fi
+        local waited=0
+        while ! ollama_api_up && [[ $waited -lt 30 ]]; do
+            sleep 1
+            waited=$((waited + 1))
+        done
+    fi
+
+    if ollama_api_up; then
+        ok "Ollama API listening on 127.0.0.1:11434 (not exposed; remote access goes through the gateway)"
+    else
+        warn "Ollama API is not reachable on 127.0.0.1:11434; start it and run: magent llm pull"
+    fi
+}
+
+# ------------------------------------------------------------------ Python package
+find_python() {
+    local candidate
+    for candidate in python3.13 python3.12 python3.11 python3.10 python3 \
+        /opt/homebrew/bin/python3.12 /usr/local/bin/python3.12; do
+        if command -v "$candidate" >/dev/null 2>&1 \
+            && "$candidate" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)' 2>/dev/null; then
+            command -v "$candidate"
+            return 0
+        fi
+    done
+    return 1
+}
+
 setup_venv() {
     step "Preparing Python virtual environment in $PROJECT_DIR/venv"
-    local requirements="$PROJECT_DIR/requirements.txt"
-    if [[ ! -f "$requirements" ]]; then
-        warn "requirements.txt not found in $PROJECT_DIR; skipping venv (use --project-dir)"
-        return 0
+    if [[ ! -f "$PROJECT_DIR/pyproject.toml" ]]; then
+        warn "pyproject.toml not found in $PROJECT_DIR; clone the repository and re-run (or use --project-dir)"
+        return 1
     fi
 
-    local python_bin
-    python_bin="$(command -v python3 || true)"
-    [[ -n "$python_bin" ]] || die "python3 not found on PATH"
-    "$python_bin" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)' \
-        || die "Python 3.9+ is required, found $("$python_bin" --version 2>&1)"
+    PYTHON_BIN="$(find_python)" \
+        || die "Python 3.10+ is required (Debian 12+/Ubuntu 22.04+ ship it; macOS: brew install python@3.12)"
 
-    if [[ ! -x "$PROJECT_DIR/venv/bin/python" ]]; then
-        "$python_bin" -m venv "$PROJECT_DIR/venv"
-        ok "venv created with $("$python_bin" --version 2>&1)"
+    local venv_python="$PROJECT_DIR/venv/bin/python"
+    if [[ -x "$venv_python" ]] && ! "$venv_python" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)' 2>/dev/null; then
+        warn "Existing venv uses Python < 3.10, recreating it"
+        rm -rf "$PROJECT_DIR/venv"
+    fi
+    if [[ ! -x "$venv_python" ]]; then
+        run_as_user "$PYTHON_BIN" -m venv "$PROJECT_DIR/venv"
+        ok "venv created with $("$PYTHON_BIN" --version 2>&1)"
     else
-        ok "venv already exists"
+        ok "venv already exists ($("$venv_python" --version 2>&1))"
     fi
 
-    "$PROJECT_DIR/venv/bin/python" -m pip install --quiet --disable-pip-version-check --upgrade pip
-    "$PROJECT_DIR/venv/bin/python" -m pip install --quiet --disable-pip-version-check -r "$requirements"
-    ok "requirements.txt installed"
+    run_as_user "$venv_python" -m pip install --quiet --disable-pip-version-check --upgrade pip
+    run_as_user "$venv_python" -m pip install --quiet --disable-pip-version-check -e "$PROJECT_DIR"
+    ok "middle_agentic installed (magent CLI: $PROJECT_DIR/venv/bin/magent)"
+}
 
-    if [[ "$(id -u)" -eq 0 && "$TARGET_USER" != "root" ]]; then
-        chown -R "$TARGET_USER:$TARGET_GROUP" "$PROJECT_DIR/venv"
+# Gateway port 8000 is only opened for tailnet addresses (100.64.0.0/10) when a firewall is active.
+open_gateway_port() {
+    [[ "$OS_NAME" == "Linux" ]] || return 0
+    if command -v ufw >/dev/null 2>&1 && run_root ufw status 2>/dev/null | grep -q "Status: active"; then
+        run_root ufw allow from 100.64.0.0/10 to any port 8000 proto tcp >/dev/null
+        ok "ufw: TCP 8000 allowed from the tailnet"
+    elif command -v firewall-cmd >/dev/null 2>&1 && run_root firewall-cmd --state >/dev/null 2>&1; then
+        run_root firewall-cmd --permanent --add-rich-rule='rule family="ipv4" source address="100.64.0.0/10" port port="8000" protocol="tcp" accept' >/dev/null
+        run_root firewall-cmd --reload >/dev/null
+        ok "firewalld: TCP 8000 allowed from the tailnet"
+    fi
+}
+
+configure_node() {
+    step "Writing node configuration (roles: $ROLES)"
+    local magent="$PROJECT_DIR/venv/bin/magent"
+    local setup_args=(setup --roles "$ROLES" --no-pull)
+    [[ -n "$LLM_MODEL" ]] && setup_args+=(--model "$LLM_MODEL")
+    run_as_user "$magent" "${setup_args[@]}"
+
+    if has_role llm && [[ "$SKIP_LLM" -eq 0 ]] && ollama_api_up; then
+        step "Pulling local model"
+        run_as_user "$magent" llm pull || warn "Model pull failed; retry with: $magent llm pull"
+    fi
+
+    if has_role gateway; then
+        open_gateway_port
+    fi
+
+    if has_role gateway && [[ "$SKIP_SERVICE" -eq 0 ]]; then
+        step "Registering gateway service"
+        run_as_user "$magent" service install || warn "Service registration failed; run the gateway with: $magent serve"
     fi
 }
 
 # ------------------------------------------------------------------ main
-step "Bootstrapping $OS_NAME host for user '$TARGET_USER'"
+step "Bootstrapping $OS_NAME host for user '$TARGET_USER' (roles: $ROLES)"
 
 if [[ "$SKIP_PACKAGES" -eq 0 ]]; then
     detect_package_manager
@@ -335,18 +508,40 @@ fi
 
 setup_ssh_dir
 
-if [[ "$SKIP_VENV" -eq 0 ]]; then
-    setup_venv
+if [[ "$SKIP_TAILSCALE" -eq 0 ]]; then
+    setup_tailscale
 else
-    warn "Skipping venv (--skip-venv)"
+    warn "Skipping Tailscale (--skip-tailscale)"
 fi
+
+if has_role llm && [[ "$SKIP_LLM" -eq 0 ]]; then
+    setup_ollama
+fi
+
+if [[ "$SKIP_VENV" -eq 0 ]]; then
+    if setup_venv; then
+        configure_node
+    fi
+else
+    warn "Skipping venv, configuration and service (--skip-venv)"
+fi
+
+TS_IP=""
+TS="$(tailscale_bin)"
+[[ -n "$TS" ]] && TS_IP="$("$TS" ip -4 2>/dev/null | head -n 1 || true)"
 
 echo
 step "Bootstrap summary"
 echo "    OS            : $OS_NAME ($(uname -m))"
 echo "    User          : $TARGET_USER"
+echo "    Roles         : $ROLES"
 echo "    SSH listening : $(ssh_port_open && echo yes || echo no)"
+echo "    Tailscale IP  : ${TS_IP:-not connected}"
+echo "    Ollama        : $(ollama_api_up && echo running || echo 'not running')"
 echo "    Project dir   : $PROJECT_DIR"
-if [[ -x "$PROJECT_DIR/venv/bin/python" ]]; then
-    echo "    Start gateway : cd \"$PROJECT_DIR\" && ./venv/bin/uvicorn gateway:app --host 0.0.0.0 --port 8000"
+if [[ -x "$PROJECT_DIR/venv/bin/magent" ]]; then
+    echo "    CLI           : $PROJECT_DIR/venv/bin/magent (try: magent nodes, magent ask \"hi\")"
+    if has_role gateway; then
+        echo "    Gateway       : http://${TS_IP:-127.0.0.1}:8000  (status: magent service status)"
+    fi
 fi

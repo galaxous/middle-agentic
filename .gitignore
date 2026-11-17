@@ -3,6 +3,13 @@ venv/
 .venv/
 __pycache__/
 *.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+
+# Node-specific configuration (see config.example.yaml)
+config.yaml
 
 # Runtime data
 agent_memory.db
