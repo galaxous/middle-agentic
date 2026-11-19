@@ -194,8 +194,15 @@ class MiddleAgentClient:
         session_id: str | None = None,
         recent_limit: int | None = None,
         related_limit: int | None = None,
+        important_limit: int | None = None,
     ) -> dict[str, Any]:
-        body = {"session_id": self._session(session_id), "query": query, "recent_limit": recent_limit, "related_limit": related_limit}
+        body = {
+            "session_id": self._session(session_id),
+            "query": query,
+            "recent_limit": recent_limit,
+            "related_limit": related_limit,
+            "important_limit": important_limit,
+        }
         return self._request("POST", "/v1/memory/context", json=body).json()
 
     def record_event(

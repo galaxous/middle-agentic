@@ -41,6 +41,16 @@ async def test_mcp_tools_round_trip(live_server: str, tmp_path) -> None:
         found = await session.call_tool("memory_search", {"query": "who owns invoices"})
         assert "Billing service owns invoices" in found.content[0].text
 
+        project = {"project_dir": "/work/shop"}
+        recorded = await session.call_tool(
+            "memory_record", {"content": "Checkout uses Stripe", "role": "decision", **project}
+        )
+        assert "session project:shop-" in recorded.content[0].text
+        found = await session.call_tool("memory_search", {"query": "stripe checkout", **project})
+        assert "[decision] Checkout uses Stripe" in found.content[0].text
+        found = await session.call_tool("memory_search", {"query": "stripe checkout"})
+        assert "Stripe" not in found.content[0].text
+
         answer = await session.call_tool("ask", {"prompt": "hi", "model": "paid"})
         assert "answer from openai/m-paid" in answer.content[0].text
         assert "tier=paid" in answer.content[0].text

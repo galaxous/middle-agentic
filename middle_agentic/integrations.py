@@ -106,5 +106,10 @@ def install_claude(scope: str = "user", project_dir: Path | None = None, url: st
             result = subprocess.run(command, capture_output=True, text=True)
             written.append("claude mcp (user scope)" if result.returncode == 0 else f"claude mcp add failed: {result.stderr.strip()}")
         else:
-            written.append("claude CLI not found, register MCP manually: " + " ".join(f'"{part}"' if " " in part else part for part in command))
+            # Same place `claude mcp add --scope user` writes to.
+            claude_json = Path.home() / ".claude.json"
+            config = _load_json(claude_json, {})
+            config.setdefault("mcpServers", {})[MCP_SERVER_NAME] = {"type": "stdio", **entry, "env": {}}
+            _write_json(claude_json, config)
+            written.append(claude_json)
     return written

@@ -19,6 +19,7 @@ class ContextRequest(BaseModel):
     query: str = ""
     recent_limit: int | None = Field(default=None, ge=0, le=100)
     related_limit: int | None = Field(default=None, ge=0, le=100)
+    important_limit: int | None = Field(default=None, ge=0, le=100)
 
 
 class EventRequest(BaseModel):
@@ -33,7 +34,9 @@ class EventRequest(BaseModel):
 @router.post("/context")
 async def memory_context(body: ContextRequest, state: GatewayState = Depends(require_memory)) -> dict[str, Any]:
     session_id = normalise_session_id(body.session_id)
-    rows = await state.memory.fetch_context(session_id, body.query, body.recent_limit, body.related_limit)
+    rows = await state.memory.fetch_context(
+        session_id, body.query, body.recent_limit, body.related_limit, body.important_limit
+    )
     return {
         "session_id": session_id,
         "nodes": rows,

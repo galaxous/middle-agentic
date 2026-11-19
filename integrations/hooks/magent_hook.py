@@ -10,9 +10,12 @@ gateway's answer on stdout in the format the tool expects.
 Fail-open by design: if the gateway is down, slow or misconfigured, a neutral answer is printed
 and the agent continues untouched. Standard library only, so it runs with any Python 3.8+.
 
-Configuration (environment, or the repository's .env file):
-    MAGENT_URL        gateway base URL (default http://127.0.0.1:$GATEWAY_PORT or :8000)
-    MAGENT_API_KEY    bearer key (falls back to GATEWAY_API_KEY)
+Configuration (environment, or the repository's .env file), first match wins:
+    --url                 set by `magent integrate` (the resolved default node)
+    MAGENT_URL            gateway base URL
+    MAGENT_DEFAULT_NODE   node name or URL; names become http://<name>:$MAGENT_PORT (MagicDNS)
+    otherwise             http://127.0.0.1:$GATEWAY_PORT (default port 8000)
+    MAGENT_API_KEY        bearer key (falls back to GATEWAY_API_KEY)
 """
 import argparse
 import json
@@ -41,6 +44,19 @@ def load_env(path):
         os.environ.setdefault(key, value)
 
 
+def resolve_base_url(explicit=None):
+    if explicit:
+        return explicit
+    if os.environ.get("MAGENT_URL"):
+        return os.environ["MAGENT_URL"]
+    node = os.environ.get("MAGENT_DEFAULT_NODE", "").strip()
+    if node and node.lower() not in ("local", "localhost", "127.0.0.1"):
+        if node.startswith(("http://", "https://")):
+            return node
+        return "http://{}:{}".format(node, os.environ.get("MAGENT_PORT", "8000"))
+    return "http://127.0.0.1:{}".format(os.environ.get("GATEWAY_PORT", "8000"))
+
+
 def neutral_answer(tool, event):
     return {"continue": True} if (tool, event) == ("cursor", "beforeSubmitPrompt") else {}
 
@@ -62,7 +78,7 @@ def main(argv=None):
     answer = neutral_answer(args.tool, event)
     if event:
         load_env(REPO_ROOT / ".env")
-        base_url = args.url or os.environ.get("MAGENT_URL") or "http://127.0.0.1:{}".format(os.environ.get("GATEWAY_PORT", "8000"))
+        base_url = resolve_base_url(args.url)
         api_key = os.environ.get("MAGENT_API_KEY") or os.environ.get("GATEWAY_API_KEY", "")
         headers = {"Content-Type": "application/json"}
         if api_key:

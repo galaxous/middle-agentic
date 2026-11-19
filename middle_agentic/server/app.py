@@ -45,6 +45,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         settings.memory.resolved_db_path(),
         recent_limit=settings.memory.recent_limit,
         related_limit=settings.memory.related_limit,
+        important_limit=settings.memory.important_limit,
     )
     router = ModelRouter(
         resolve_chain(settings.chain),

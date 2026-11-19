@@ -16,6 +16,7 @@ memory:
   db_path: agent_memory.db    # relative to the project directory
   recent_limit: 6
   related_limit: 4
+  important_limit: 5          # latest decision/fact notes added at session start
   snippet_chars: 500
 
 # The node's own local model server (role: llm).

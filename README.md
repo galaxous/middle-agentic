@@ -169,6 +169,7 @@ magent llm pull qwen2.5:7b | list | status
 magent serve                                   # gateway'i ön planda çalıştır
 magent service install | uninstall | status
 magent integrate cursor | claude [--scope project] [--url http://acer:8000]
+magent rules install | remove | show [--tool cursor|claude|all] [--project DIR]
 magent mcp                                     # MCP server (stdio)
 ```
 
@@ -211,8 +212,13 @@ reply = client.chat.completions.create(
 
 ```bash
 magent integrate cursor     # ~/.cursor/hooks.json + ~/.cursor/mcp.json
-magent integrate claude     # ~/.claude/settings.json + claude mcp add --scope user
+magent integrate claude     # ~/.claude/settings.json + claude mcp add (CLI yoksa ~/.claude.json)
+cd ~/projem && magent rules install   # .cursor/rules/memory.mdc + CLAUDE.md içine hafıza bloğu
 ```
+
+`magent integrate`, `--url` verilmezse `MAGENT_URL`'i, ardından `MAGENT_DEFAULT_NODE`'u kurulum anında çözer (ör. Tailscale IP'si) ve hook komutuna `--url` olarak yazar. Hook scripti de `--url` yoksa aynı sırayı izler.
+
+`magent rules install`, agent'a her iş öncesinde `memory_search`, karar ve bilgiler için de `memory_record` (`role: decision | fact | note`) çağırmasını söyleyen kuralları projeye yazar. Kural, projenin mutlak yolunu `project_dir` olarak içerir. Böylece MCP server hangi dizinden başlatılırsa başlatılsın hook'larla aynı hafızayı kullanır. `CLAUDE.md`'deki mevcut içerik korunur; yalnızca işaretli blok eklenir ya da güncellenir.
 
 | Araç | Hook | Davranış |
 | --- | --- | --- |
@@ -234,7 +240,7 @@ Hook scripti (`integrations/hooks/magent_hook.py`) yalnızca standart kütüphan
 | `GET /health` | Node adı, roller, zincirdeki katmanların durumu, hafıza istatistikleri. Kimlik doğrulama istemez; keşif için kullanılır. |
 | `GET /v1/models` | `auto` ve zincirdeki katmanlar |
 | `POST /v1/chat/completions` | OpenAI uyumlu chat. `stream: true` desteklenir. |
-| `POST /v1/memory/context` | `{session_id, query, recent_limit?, related_limit?}` alır, bağlam düğümlerini ve hazır metni döner (pre-hook) |
+| `POST /v1/memory/context` | `{session_id, query, recent_limit?, related_limit?, important_limit?}` alır, bağlam düğümlerini ve hazır metni döner (pre-hook) |
 | `POST /v1/memory/events` | `{session_id, role, content, metadata?, link_to?, relation?}` alır ve düğüm ekler (post-hook) |
 | `GET /v1/memory/sessions` | Oturum listesi |
 | `GET /v1/memory/sessions/{id}` | Oturumun grafı (düğümler ve kenarlar) |
@@ -262,9 +268,12 @@ Streaming'de fallback yalnızca ilk chunk gelmeden önce yapılır. Stream ortas
 ```text
 nodes(id, session_id, role, content, metadata, created_at)
 edges(src_id, dst_id, relation, created_at)   -- follows | responded_by | özel ilişkiler
+nodes_fts(node_id, content)                   -- FTS5 tam metin indeksi, trigger'larla güncel tutulur
 ```
 
-- **pre-hook:** Oturumun son düğümleri alınır, ardından anahtar kelimeyle eşleşen düğümler ve bunların `responded_by` komşuları eklenir. Sonuç, istemcinin system prompt'larından hemen sonra bir `system` mesajı olarak enjekte edilir.
+- **Arama:** SQLite FTS5 ve BM25 sıralaması kullanılır. Uzun kelimeler önek olarak aranır (`veritabanında` sorgusu `veritabanı` kaydını bulur). `decision` ve `fact` düğümlerinin skoru 2 kat ağırlıklıdır, bu yüzden ham konuşmanın önüne geçerler. FTS5 yoksa `LIKE` aramasına düşülür. Eski veritabanları ilk açılışta otomatik indekslenir.
+- **Oturum başı:** Sorgu yoksa son `memory.important_limit` (varsayılan 5) karar ve bilgi notu eklenir. Bağlam metninde bunlar "Project decisions and facts" başlığı altında, konuşmadan önce gelir.
+- **pre-hook:** Oturumun son düğümleri alınır, ardından sorguyla eşleşen düğümler ve bunların `responded_by` komşuları eklenir. Sonuç, istemcinin system prompt'larından hemen sonra bir `system` mesajı olarak enjekte edilir.
 - **post-hook:** Yanıt gönderildikten sonra arka planda yazılır. Hafıza hataları isteği asla bozmaz.
 
 ## Geliştirme

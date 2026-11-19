@@ -9,6 +9,7 @@
     magent mcp
     magent service install|uninstall|status
     magent integrate cursor|claude [--scope user|project]
+    magent rules install|remove|show [--tool cursor|claude|all] [--project DIR]
     magent health [--node acer]
 """
 from __future__ import annotations
@@ -191,14 +192,47 @@ def cmd_service(args: argparse.Namespace) -> int:
     return 0
 
 
+def _default_hook_url() -> str | None:
+    """URL of MAGENT_URL / MAGENT_DEFAULT_NODE, resolved now so hooks need no discovery at runtime."""
+    from middle_agentic.client.discovery import resolve_node
+
+    node = resolve_node(None, load_settings())
+    return None if node.source == "local" else node.url
+
+
 def cmd_integrate(args: argparse.Namespace) -> int:
     from middle_agentic import integrations
 
     project = Path(args.project) if args.project else (Path.cwd() if args.scope == "project" else None)
+    url = args.url or _default_hook_url()
     installer = integrations.install_cursor if args.tool == "cursor" else integrations.install_claude
-    for written in installer(scope=args.scope, project_dir=project, url=args.url):
+    for written in installer(scope=args.scope, project_dir=project, url=url):
         print(f"updated: {written}")
+    print(f"hooks send events to: {url or 'the local gateway (127.0.0.1)'}")
+    print("add memory rules to a project with: magent rules install --project <dir>")
     print("restart the tool (or reload the window) to pick up the changes")
+    return 0
+
+
+def cmd_rules(args: argparse.Namespace) -> int:
+    from middle_agentic import rules
+
+    project = Path(args.project) if args.project else Path.cwd()
+    tools = rules.TOOLS if args.tool == "all" else (args.tool,)
+    if args.action == "show":
+        project_path = os.path.abspath(project)
+        render = rules.cursor_rule if args.tool == "cursor" else rules.memory_instructions
+        print(render(project_path))
+        return 0
+    if args.action == "install":
+        for path in rules.install(project, tools):
+            print(f"written: {path}")
+        return 0
+    removed = rules.remove(project, tools)
+    for path in removed:
+        print(f"removed: {path}")
+    if not removed:
+        print("nothing to remove")
     return 0
 
 
@@ -387,8 +421,16 @@ def build_parser() -> argparse.ArgumentParser:
     integrate.add_argument("tool", choices=["cursor", "claude"])
     integrate.add_argument("--scope", choices=["user", "project"], default="user")
     integrate.add_argument("--project", help="project directory for --scope project (default: cwd)")
-    integrate.add_argument("--url", help="gateway URL the hooks talk to (default: MAGENT_URL or local)")
+    integrate.add_argument(
+        "--url", help="gateway URL the hooks talk to (default: MAGENT_URL, then MAGENT_DEFAULT_NODE, then local)"
+    )
     integrate.set_defaults(func=cmd_integrate)
+
+    rules_parser = sub.add_parser("rules", help="write project rules that make Cursor/Claude use the memory tools")
+    rules_parser.add_argument("action", choices=["install", "remove", "show"])
+    rules_parser.add_argument("--tool", choices=["cursor", "claude", "all"], default="all")
+    rules_parser.add_argument("--project", help="project directory (default: cwd)")
+    rules_parser.set_defaults(func=cmd_rules)
     return parser
 
 

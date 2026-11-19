@@ -4,7 +4,13 @@ import sqlite3
 
 import pytest
 
-from middle_agentic.memory.graph import GraphMemory, extract_keywords, format_context, normalise_session_id
+from middle_agentic.memory.graph import (
+    GraphMemory,
+    build_fts_query,
+    extract_keywords,
+    format_context,
+    normalise_session_id,
+)
 
 
 @pytest.fixture
@@ -73,8 +79,70 @@ async def test_like_wildcards_are_escaped(memory: GraphMemory) -> None:
     assert rows == []
 
 
+async def test_decisions_and_facts_outrank_conversation(tmp_path) -> None:
+    memory = GraphMemory(tmp_path / "memory.db", recent_limit=0, related_limit=1)
+    await memory.initialize()
+    await memory.add_node("s1", "decision", "Use redis for caching sessions")
+    await memory.add_node("s1", "user", "we talked about redis caching today")
+    rows = await memory.fetch_context("s1", "redis caching")
+    assert [row["role"] for row in rows] == ["decision"]
+
+
+async def test_inflected_turkish_words_match(memory: GraphMemory) -> None:
+    await memory.add_node("s1", "fact", "Veritabanı olarak PostgreSQL kullanılıyor")
+    rows = await memory.fetch_context("s1", "veritabanında hangi sistem var", recent_limit=0)
+    assert [row["content"] for row in rows] == ["Veritabanı olarak PostgreSQL kullanılıyor"]
+
+
+async def test_session_start_lists_latest_decisions_and_facts(tmp_path) -> None:
+    memory = GraphMemory(tmp_path / "memory.db", recent_limit=1, related_limit=0, important_limit=2)
+    await memory.initialize()
+    await memory.add_node("s1", "decision", "old decision")
+    await memory.add_node("s1", "fact", "a fact")
+    await memory.add_node("s1", "decision", "new decision")
+    for index in range(3):
+        await memory.add_node("s1", "user", f"chatter {index}")
+    rows = await memory.fetch_context("s1", "")
+    assert [row["content"] for row in rows] == ["a fact", "new decision", "chatter 2"]
+
+    text = format_context(rows)
+    assert text is not None
+    assert text.index("Project decisions and facts:") < text.index("- [fact] a fact") < text.index("Related conversation:")
+
+
+async def test_existing_database_is_indexed_on_upgrade(tmp_path) -> None:
+    db_path = tmp_path / "legacy.db"
+    connection = sqlite3.connect(db_path)
+    from middle_agentic.memory.graph import SCHEMA
+
+    connection.executescript(SCHEMA)
+    connection.execute(
+        "INSERT INTO nodes (id, session_id, role, content, created_at) VALUES ('n1', 's1', 'note', 'kafka topic naming', 1)"
+    )
+    connection.commit()
+    connection.close()
+
+    memory = GraphMemory(db_path, recent_limit=0)
+    await memory.initialize()
+    assert memory.fts_enabled
+    assert [row["id"] for row in await memory.fetch_context("s1", "kafka")] == ["n1"]
+    await memory.initialize()  # idempotent: no duplicate index rows
+    assert len(await memory.fetch_context("s1", "kafka")) == 1
+
+
+async def test_like_fallback_without_fts(memory: GraphMemory) -> None:
+    memory.fts_enabled = False
+    await memory.add_node("s1", "user", "redis caching chatter")
+    await memory.add_node("s1", "decision", "redis for caching")
+    await memory.add_node("s1", "user", "more redis chatter")
+    rows = await memory.fetch_context("s1", "redis", recent_limit=0, related_limit=1)
+    assert [row["role"] for row in rows] == ["decision"]
+
+
 def test_helpers() -> None:
     assert extract_keywords("What is the Postgres ledger setup?") == ["postgres", "ledger", "setup"]
+    assert build_fts_query("veritabanında api_key") == '"veritabanı"* OR "api"* OR "key"*'
+    assert build_fts_query("is it?") is None
     assert normalise_session_id("  proj ect/../x ") == "project..x"
     assert normalise_session_id(None) == "default"
     assert format_context([]) is None

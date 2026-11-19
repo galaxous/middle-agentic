@@ -76,6 +76,7 @@ class MemoryConfig(BaseModel):
     db_path: str = "agent_memory.db"
     recent_limit: int = 6
     related_limit: int = 4
+    important_limit: int = 5
     snippet_chars: int = 500
 
     def resolved_db_path(self) -> Path:
@@ -202,6 +203,7 @@ def _apply_env_overrides(data: dict[str, Any]) -> None:
         ("MEMORY_DB_PATH", ("memory", "db_path"), str),
         ("MEMORY_RECENT_LIMIT", ("memory", "recent_limit"), int),
         ("MEMORY_RELATED_LIMIT", ("memory", "related_limit"), int),
+        ("MEMORY_IMPORTANT_LIMIT", ("memory", "important_limit"), int),
         ("MEMORY_SNIPPET_CHARS", ("memory", "snippet_chars"), int),
         ("MAGENT_NODE_NAME", ("node", "name"), str),
         ("LLM_RUNTIME", ("llm", "runtime"), str),

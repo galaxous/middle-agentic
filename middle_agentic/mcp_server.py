@@ -72,21 +72,56 @@ def build_server(settings: Settings | None = None) -> _Server:
 
         return await run_safely(call)
 
-    @server.tool(description="Search project memory (earlier prompts, answers, notes and decisions).")
-    async def memory_search(query: str, node: str | None = None, session_id: str | None = None, limit: int = 8) -> str:
+    def resolve_session(session_id: str | None, project_dir: str | None) -> str | None:
+        if session_id:
+            return session_id
+        return project_session_id(project_dir) if project_dir else None
+
+    @server.tool(
+        description=(
+            "Search project memory (decisions, facts, notes and earlier conversation). Decisions and facts "
+            "rank first. Pass project_dir (absolute workspace root) so the right project's memory is used."
+        )
+    )
+    async def memory_search(
+        query: str,
+        project_dir: str | None = None,
+        node: str | None = None,
+        session_id: str | None = None,
+        limit: int = 8,
+    ) -> str:
         def call() -> str:
             with client_for(node) as client:
-                result = client.context(query, session_id=session_id, recent_limit=max(1, limit // 2), related_limit=limit)
+                result = client.context(
+                    query, session_id=resolve_session(session_id, project_dir), recent_limit=0, related_limit=limit
+                )
             return result.get("context") or "No matching memory."
 
         return await run_safely(call)
 
-    @server.tool(description="Store a note, decision or fact in project memory for later sessions and other agents.")
-    async def memory_record(content: str, role: str = "note", node: str | None = None, session_id: str | None = None) -> str:
+    @server.tool(
+        description=(
+            "Store one self-contained sentence in project memory for later sessions and other agents. "
+            "role: 'decision' (choice + reason), 'fact' (stable project fact) or 'note'. "
+            "Pass project_dir (absolute workspace root)."
+        )
+    )
+    async def memory_record(
+        content: str,
+        role: str = "note",
+        project_dir: str | None = None,
+        node: str | None = None,
+        session_id: str | None = None,
+    ) -> str:
         def call() -> str:
             with client_for(node) as client:
-                result = client.record_event(content, role=role, session_id=session_id, metadata={"source": "mcp"})
-            return f"Recorded node {result['id']} in session {result['session_id']}."
+                result = client.record_event(
+                    content,
+                    role=role,
+                    session_id=resolve_session(session_id, project_dir),
+                    metadata={"source": "mcp"},
+                )
+            return f"Recorded {role} node {result['id']} in session {result['session_id']}."
 
         return await run_safely(call)
 
