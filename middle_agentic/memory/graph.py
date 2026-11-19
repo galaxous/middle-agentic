@@ -204,6 +204,16 @@ class GraphMemory:
             (session_id, *[f"%{_escape_like(word)}%" for word in keywords], *IMPORTANT_ROLES, limit),
         ).fetchall()
 
+    @staticmethod
+    def _responded_neighbours(connection: sqlite3.Connection, ids: list[str]) -> list[sqlite3.Row]:
+        marks = ",".join("?" for _ in ids)
+        return connection.execute(
+            f"SELECT n.id, n.role, n.content, n.created_at FROM edges e "
+            f"JOIN nodes n ON n.id = CASE WHEN e.src_id IN ({marks}) THEN e.dst_id ELSE e.src_id END "
+            f"WHERE e.relation = 'responded_by' AND (e.src_id IN ({marks}) OR e.dst_id IN ({marks}))",
+            (*ids, *ids, *ids),
+        ).fetchall()
+
     def _context_sync(
         self, session_id: str, query: str, recent_limit: int, related_limit: int, important_limit: int
     ) -> list[dict[str, Any]]:
@@ -232,14 +242,7 @@ class GraphMemory:
 
                 # One-hop expansion: a matched question brings its answer along, and vice versa.
                 if new_related:
-                    ids = [row["id"] for row in new_related]
-                    marks = ",".join("?" for _ in ids)
-                    neighbours = connection.execute(
-                        f"SELECT n.id, n.role, n.content, n.created_at FROM edges e "
-                        f"JOIN nodes n ON n.id = CASE WHEN e.src_id IN ({marks}) THEN e.dst_id ELSE e.src_id END "
-                        f"WHERE e.relation = 'responded_by' AND (e.src_id IN ({marks}) OR e.dst_id IN ({marks}))",
-                        (*ids, *ids, *ids),
-                    ).fetchall()
+                    neighbours = self._responded_neighbours(connection, [row["id"] for row in new_related])
                     selected.update({row["id"]: row for row in neighbours})
 
         rows = sorted(selected.values(), key=lambda row: row["created_at"])
@@ -370,6 +373,57 @@ class GraphMemory:
             session_id, "assistant", assistant_text, metadata, link_to=user_id, relation="responded_by"
         )
         return user_id, assistant_id
+
+    # -- delete ---------------------------------------------------------------------
+    def _forget_sync(
+        self,
+        session_id: str,
+        ids: Sequence[str],
+        match: str | None,
+        role: str | None,
+        with_answers: bool,
+        dry_run: bool,
+    ) -> list[dict[str, Any]]:
+        if not ids and not match:
+            raise ValueError("give node ids or a text to match")
+        clauses, params = ["session_id = ?"], [session_id]
+        if ids:
+            clauses.append(f"id IN ({','.join('?' for _ in ids)})")
+            params.extend(ids)
+        if match:
+            clauses.append("content LIKE ? ESCAPE '\\'")
+            params.append(f"%{_escape_like(match)}%")
+        if role:
+            clauses.append("role = ?")
+            params.append(role)
+
+        with closing(self._connect()) as connection, connection:
+            rows = connection.execute(
+                f"SELECT id, role, content, created_at FROM nodes WHERE {' AND '.join(clauses)}", params
+            ).fetchall()
+            selected = {row["id"]: row for row in rows}
+            if with_answers and selected:
+                neighbours = self._responded_neighbours(connection, list(selected))
+                selected.update({row["id"]: row for row in neighbours})
+            if selected and not dry_run:
+                # Edges go with ON DELETE CASCADE, FTS rows with the delete trigger.
+                marks = ",".join("?" for _ in selected)
+                connection.execute(f"DELETE FROM nodes WHERE id IN ({marks})", list(selected))
+
+        rows = sorted(selected.values(), key=lambda row: row["created_at"])
+        return [{key: row[key] for key in ("id", "role", "content", "created_at")} for row in rows]
+
+    async def forget(
+        self,
+        session_id: str,
+        ids: Sequence[str] = (),
+        match: str | None = None,
+        role: str | None = None,
+        with_answers: bool = True,
+        dry_run: bool = False,
+    ) -> list[dict[str, Any]]:
+        """Delete nodes by id and/or content substring. A matched question takes its answer with it."""
+        return await asyncio.to_thread(self._forget_sync, session_id, ids, match, role, with_answers, dry_run)
 
     # -- stats ----------------------------------------------------------------------
     def _stats_sync(self) -> dict[str, int]:

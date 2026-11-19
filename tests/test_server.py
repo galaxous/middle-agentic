@@ -140,3 +140,23 @@ def test_memory_api(client: TestClient) -> None:
     graph = client.get("/v1/memory/sessions/api", headers=AUTH).json()
     assert {e["relation"] for e in graph["edges"]} == {"follows", "implements"}
     assert client.get("/v1/memory/sessions", headers=AUTH).json()["sessions"][0]["session_id"] == "api"
+
+
+def test_memory_forget_api(client: TestClient) -> None:
+    client.post("/v1/memory/events", json={"session_id": "f", "role": "user", "content": "test prompt alpha"}, headers=AUTH)
+    client.post("/v1/memory/events", json={"session_id": "f", "role": "assistant", "content": "noisy answer"}, headers=AUTH)
+    client.post("/v1/memory/events", json={"session_id": "f", "role": "fact", "content": "keep alpha fact"}, headers=AUTH)
+
+    preview = client.post("/v1/memory/forget", json={"session_id": "f", "match": "test prompt"}, headers=AUTH).json()
+    assert preview["deleted"] is False
+    assert [node["content"] for node in preview["nodes"]] == ["test prompt alpha", "noisy answer"]
+
+    done = client.post(
+        "/v1/memory/forget", json={"session_id": "f", "match": "test prompt", "dry_run": False}, headers=AUTH
+    ).json()
+    assert done["deleted"] is True
+    context = client.post("/v1/memory/context", json={"session_id": "f", "query": "alpha"}, headers=AUTH).json()
+    assert [node["content"] for node in context["nodes"]] == ["keep alpha fact"]
+
+    assert client.post("/v1/memory/forget", json={"session_id": "f"}, headers=AUTH).status_code == 400
+    assert client.post("/v1/memory/forget", json={"session_id": "f", "match": "ab"}, headers=AUTH).status_code == 422

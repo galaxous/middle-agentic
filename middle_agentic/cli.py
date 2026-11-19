@@ -5,7 +5,7 @@
     magent llm pull qwen2.5:3b | list | status
     magent nodes
     magent ask "..." [--node acer] [--model local] [--stream]
-    magent hook context|record|sessions|graph ...
+    magent hook context|record|forget|sessions|graph ...
     magent mcp
     magent service install|uninstall|status
     magent integrate cursor|claude [--scope user|project]
@@ -342,7 +342,29 @@ def cmd_hook(args: argparse.Namespace) -> int:
                 content = _read_prompt(args.text)
                 if not content:
                     return _fail("empty content")
-                _print_json(client.record_event(content, role=args.role, metadata={"source": "cli"}))
+                _print_json(client.record_event(content, role=args.role or "note", metadata={"source": "cli"}))
+            elif args.action == "forget":
+                match = " ".join(args.text).strip() or None
+                if not match and not args.id:
+                    return _fail("give a text to match or --id")
+                result = client.forget(
+                    match,
+                    ids=args.id,
+                    role=args.role,
+                    with_answers=not args.no_answers,
+                    dry_run=not args.yes,
+                )
+                if args.json:
+                    _print_json(result)
+                    return 0
+                for node in result["nodes"]:
+                    snippet = " ".join(node["content"].split())[:100]
+                    print(f"{node['id']}  [{node['role']}] {snippet}")
+                count = len(result["nodes"])
+                if result["deleted"]:
+                    print(f"deleted {count} node(s) from {result['session_id']}")
+                else:
+                    print(f"{count} node(s) would be deleted from {result['session_id']}; re-run with --yes to delete")
             elif args.action == "sessions":
                 _print_json(client.sessions())
             elif args.action == "graph":
@@ -402,10 +424,17 @@ def build_parser() -> argparse.ArgumentParser:
     ask.set_defaults(func=cmd_ask)
 
     hook = sub.add_parser("hook", help="memory pre/post hook primitives on a node")
-    hook.add_argument("action", choices=["context", "record", "sessions", "graph"])
-    hook.add_argument("text", nargs="*", help="query (context), content (record) or session id (graph)")
+    hook.add_argument("action", choices=["context", "record", "forget", "sessions", "graph"])
+    hook.add_argument(
+        "text", nargs="*", help="query (context), content (record), text to match (forget) or session id (graph)"
+    )
     add_target(hook)
-    hook.add_argument("--role", default="note", help="node role for record (note, decision, fact, ...)")
+    hook.add_argument(
+        "--role", default=None, help="node role: for record (default note) or a filter for forget (decision, fact, ...)"
+    )
+    hook.add_argument("--id", action="append", default=[], help="forget: node id (repeatable)")
+    hook.add_argument("--no-answers", action="store_true", help="forget: keep answers of matched questions")
+    hook.add_argument("--yes", action="store_true", help="forget: really delete (default lists matches only)")
     hook.add_argument("--limit", type=int, default=None)
     hook.add_argument("--json", action="store_true")
     hook.set_defaults(func=cmd_hook)

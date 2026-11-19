@@ -139,6 +139,25 @@ async def test_like_fallback_without_fts(memory: GraphMemory) -> None:
     assert [row["role"] for row in rows] == ["decision"]
 
 
+async def test_forget_removes_nodes_edges_and_index(memory: GraphMemory) -> None:
+    await memory.record_exchange("s1", "Tailscale ip?", "I cannot tell", {})
+    await memory.record_exchange("other", "Tailscale ip?", "keep me", {})
+    decision = await memory.add_node("s1", "decision", "Tailscale ACLs allow port 8000")
+
+    assert len(await memory.forget("s1", match="ip?", dry_run=True)) == 2
+    removed = await memory.forget("s1", match="ip?")
+    assert [row["content"] for row in removed] == ["Tailscale ip?", "I cannot tell"]
+
+    graph = await memory.session_graph("s1")
+    assert [node["id"] for node in graph["nodes"]] == [decision] and graph["edges"] == []
+    rows = await memory.fetch_context("s1", "tailscale", recent_limit=0)
+    assert [row["id"] for row in rows] == [decision]
+    assert len((await memory.session_graph("other"))["nodes"]) == 2
+
+    with pytest.raises(ValueError):
+        await memory.forget("s1")
+
+
 def test_helpers() -> None:
     assert extract_keywords("What is the Postgres ledger setup?") == ["postgres", "ledger", "setup"]
     assert build_fts_query("veritabanında api_key") == '"veritabanı"* OR "api"* OR "key"*'

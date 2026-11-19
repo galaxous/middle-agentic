@@ -225,6 +225,26 @@ class MiddleAgentClient:
         }
         return self._request("POST", "/v1/memory/events", json=body).json()
 
+    def forget(
+        self,
+        match: str | None = None,
+        *,
+        ids: list[str] | None = None,
+        role: str | None = None,
+        session_id: str | None = None,
+        with_answers: bool = True,
+        dry_run: bool = True,
+    ) -> dict[str, Any]:
+        body = {
+            "session_id": self._session(session_id),
+            "ids": ids or [],
+            "match": match,
+            "role": role,
+            "with_answers": with_answers,
+            "dry_run": dry_run,
+        }
+        return self._request("POST", "/v1/memory/forget", json=body).json()
+
     def sessions(self, limit: int = 50) -> list[dict[str, Any]]:
         return self._request("GET", "/v1/memory/sessions", params={"limit": limit}).json()["sessions"]
 

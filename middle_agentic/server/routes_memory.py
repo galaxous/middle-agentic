@@ -56,6 +56,27 @@ async def memory_event(body: EventRequest, state: GatewayState = Depends(require
     return {"id": node_id, "session_id": session_id}
 
 
+class ForgetRequest(BaseModel):
+    session_id: str = "default"
+    ids: list[str] = Field(default_factory=list, max_length=1000)
+    match: str | None = Field(default=None, min_length=3, max_length=1000)
+    role: str | None = Field(default=None, pattern=r"^[a-z_][a-z0-9_-]{0,31}$")
+    with_answers: bool = True
+    dry_run: bool = True
+
+
+@router.post("/forget")
+async def memory_forget(body: ForgetRequest, state: GatewayState = Depends(require_memory)) -> dict[str, Any]:
+    session_id = normalise_session_id(body.session_id)
+    try:
+        nodes = await state.memory.forget(
+            session_id, body.ids, body.match, body.role, body.with_answers, body.dry_run
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"session_id": session_id, "deleted": not body.dry_run, "nodes": nodes}
+
+
 @router.get("/sessions")
 async def memory_sessions(
     limit: int = Query(default=50, ge=1, le=500), state: GatewayState = Depends(require_memory)
