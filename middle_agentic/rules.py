@@ -1,7 +1,10 @@
-"""Project rules that teach Cursor and Claude Code to use the middle-agentic memory tools.
+"""Project rules that teach each agent tool to use the middle-agentic memory tools.
 
-Cursor:      <project>/.cursor/rules/memory.mdc (always-applied rule, file owned by middle-agentic)
-Claude Code: <project>/CLAUDE.md, inside a marked block so the rest of the file is left alone
+cursor:      <project>/.cursor/rules/memory.mdc (always-applied rule, file owned by middle-agentic)
+claude:      <project>/CLAUDE.md, inside a marked block so the rest of the file is left alone
+codex:       <project>/AGENTS.md, marked block (Codex reads AGENTS.md)
+antigravity: <project>/AGENTS.md, same block as codex (Antigravity reads AGENTS.md too)
+continue:    <project>/.continue/rules/middle-agentic-memory.md (file owned by middle-agentic)
 """
 from __future__ import annotations
 
@@ -11,9 +14,13 @@ from pathlib import Path
 
 CURSOR_RULE = Path(".cursor") / "rules" / "memory.mdc"
 CLAUDE_FILE = Path("CLAUDE.md")
+AGENTS_FILE = Path("AGENTS.md")
+CONTINUE_RULE = Path(".continue") / "rules" / "middle-agentic-memory.md"
 BLOCK_START = "<!-- middle-agentic:memory:start -->"
 BLOCK_END = "<!-- middle-agentic:memory:end -->"
-TOOLS = ("cursor", "claude")
+TOOLS = ("cursor", "claude", "codex", "antigravity", "continue")
+# Tools whose instructions live in a marked block inside a shared markdown file.
+_BLOCK_FILES = {"claude": CLAUDE_FILE, "codex": AGENTS_FILE, "antigravity": AGENTS_FILE}
 
 _BLOCK_PATTERN = re.compile(re.escape(BLOCK_START) + r".*?" + re.escape(BLOCK_END) + r"\n?", re.DOTALL)
 
@@ -21,9 +28,9 @@ _BLOCK_PATTERN = re.compile(re.escape(BLOCK_START) + r".*?" + re.escape(BLOCK_EN
 def memory_instructions(project_dir: str) -> str:
     return f"""# Project memory (middle-agentic)
 
-This project has a persistent memory shared by Cursor and Claude Code, served by the `middle-agentic`
-MCP server (`memory_search`, `memory_record`). Always pass `project_dir: "{project_dir}"` to these
-tools so they read and write this project's memory.
+This project has a persistent memory shared by all agent tools used here (Cursor, Claude Code, Codex,
+Antigravity, Continue), served by the `middle-agentic` MCP server (`memory_search`, `memory_record`).
+Always pass `project_dir: "{project_dir}"` to these tools so they read and write this project's memory.
 
 ## Before working
 - At the start of a non-trivial task, or whenever the user refers to earlier work ("as we decided",
@@ -59,6 +66,12 @@ def cursor_rule(project_dir: str) -> str:
     return frontmatter + memory_instructions(project_dir)
 
 
+def continue_rule(project_dir: str) -> str:
+    # Continue rules take an optional frontmatter block; `name` is the rule's display name.
+    frontmatter = "---\nname: middle-agentic memory\n---\n\n"
+    return frontmatter + memory_instructions(project_dir)
+
+
 def claude_block(project_dir: str) -> str:
     return f"{BLOCK_START}\n{memory_instructions(project_dir)}{BLOCK_END}\n"
 
@@ -66,6 +79,30 @@ def claude_block(project_dir: str) -> str:
 def _project_path(project_dir: Path) -> str:
     # abspath, not resolve: the session id must match the path the editor reports for the workspace.
     return os.path.abspath(project_dir)
+
+
+def _write_block(path: Path, block: str) -> None:
+    existing = path.read_text(encoding="utf-8") if path.is_file() else ""
+    if _BLOCK_PATTERN.search(existing):
+        updated = _BLOCK_PATTERN.sub(lambda _: block, existing, count=1)
+    else:
+        updated = f"{existing.rstrip()}\n\n{block}" if existing.strip() else block
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(updated, encoding="utf-8")
+
+
+def _remove_block(path: Path) -> bool:
+    if not path.is_file():
+        return False
+    existing = path.read_text(encoding="utf-8")
+    updated = _BLOCK_PATTERN.sub("", existing).strip()
+    if updated == existing.strip():
+        return False
+    if updated:
+        path.write_text(updated + "\n", encoding="utf-8")
+    else:
+        path.unlink()
+    return True
 
 
 def install(project_dir: Path, tools: tuple[str, ...] = TOOLS) -> list[Path]:
@@ -76,15 +113,19 @@ def install(project_dir: Path, tools: tuple[str, ...] = TOOLS) -> list[Path]:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(cursor_rule(str(root)), encoding="utf-8")
         written.append(path)
-    if "claude" in tools:
-        path = root / CLAUDE_FILE
-        block = claude_block(str(root))
-        existing = path.read_text(encoding="utf-8") if path.is_file() else ""
-        if _BLOCK_PATTERN.search(existing):
-            updated = _BLOCK_PATTERN.sub(lambda _: block, existing, count=1)
-        else:
-            updated = f"{existing.rstrip()}\n\n{block}" if existing.strip() else block
-        path.write_text(updated, encoding="utf-8")
+    if "continue" in tools:
+        path = root / CONTINUE_RULE
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(continue_rule(str(root)), encoding="utf-8")
+        written.append(path)
+    # codex and antigravity share AGENTS.md: write it once even if both are requested.
+    for tool, relative in _BLOCK_FILES.items():
+        if tool not in tools:
+            continue
+        path = root / relative
+        if path in written:
+            continue
+        _write_block(path, claude_block(str(root)))
         written.append(path)
     return written
 
@@ -97,15 +138,13 @@ def remove(project_dir: Path, tools: tuple[str, ...] = TOOLS) -> list[Path]:
         if path.is_file():
             path.unlink()
             removed.append(path)
-    if "claude" in tools:
-        path = root / CLAUDE_FILE
+    if "continue" in tools:
+        path = root / CONTINUE_RULE
         if path.is_file():
-            existing = path.read_text(encoding="utf-8")
-            updated = _BLOCK_PATTERN.sub("", existing).strip()
-            if updated != existing.strip():
-                if updated:
-                    path.write_text(updated + "\n", encoding="utf-8")
-                else:
-                    path.unlink()
-                removed.append(path)
+            path.unlink()
+            removed.append(path)
+    for tool, relative in _BLOCK_FILES.items():
+        path = root / relative
+        if tool in tools and path not in removed and _remove_block(path):
+            removed.append(path)
     return removed

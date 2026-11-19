@@ -74,6 +74,25 @@ def test_hook_script_forwards_to_gateway(live_server: str, tmp_path) -> None:
     assert "deploy steps?" in json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
 
 
+def test_hook_script_passes_antigravity_event_from_flag(live_server: str, tmp_path) -> None:
+    # Antigravity payloads have no event name: the event comes from --event and becomes the URL path.
+    env = _env(tmp_path, live_server)
+    payload = {"conversationId": "ag-1", "workspacePaths": ["/tmp/antigravity-project"], "invocationNum": 0, "lastUserInput": "ship on fridays?"}
+    result = subprocess.run(
+        [sys.executable, str(HOOK_SCRIPT), "antigravity", "--event", "PreInvocation"],
+        input=json.dumps(payload), capture_output=True, text=True, env=env, timeout=20,
+    )
+    assert result.returncode == 0
+    assert json.loads(result.stdout) == {}  # nothing stored yet, so nothing to inject
+
+    payload["lastUserInput"] = "and on mondays?"
+    result = subprocess.run(
+        [sys.executable, str(HOOK_SCRIPT), "antigravity", "--event", "PreInvocation"],
+        input=json.dumps(payload), capture_output=True, text=True, env=env, timeout=20,
+    )
+    assert "ship on fridays?" in json.loads(result.stdout)["injectSteps"][0]["ephemeralMessage"]
+
+
 def test_hook_script_fails_open(tmp_path) -> None:
     env = _env(tmp_path, "http://127.0.0.1:9")
     result = run_hook("cursor", {"hook_event_name": "beforeSubmitPrompt", "prompt": "x"}, env)

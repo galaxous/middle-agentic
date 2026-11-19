@@ -170,7 +170,9 @@ magent llm pull qwen2.5:7b | list | status
 magent serve                                   # gateway'i ön planda çalıştır
 magent service install | uninstall | status
 magent integrate cursor | claude [--scope project] [--url http://acer:8000]
-magent rules install | remove | show [--tool cursor|claude|all] [--project DIR]
+magent integrate codex | antigravity [--scope project] [--url URL]   # hook + MCP
+magent integrate continue [--scope project]                         # yalnızca MCP
+magent rules install | remove | show [--tool cursor|claude|codex|antigravity|continue|all] [--project DIR]
 magent mcp                                     # MCP server (stdio)
 ```
 
@@ -216,6 +218,27 @@ magent integrate cursor     # ~/.cursor/hooks.json + ~/.cursor/mcp.json
 magent integrate claude     # ~/.claude/settings.json + claude mcp add (CLI yoksa ~/.claude.json)
 cd ~/projem && magent rules install   # .cursor/rules/memory.mdc + CLAUDE.md içine hafıza bloğu
 ```
+
+### Codex, Antigravity ve Continue
+
+| Araç | Hook (`magent integrate`) | MCP | Kural (`magent rules install`) |
+| --- | --- | --- | --- |
+| Codex CLI | `~/.codex/hooks.json`: `SessionStart`, `UserPromptSubmit`, `Stop` | `~/.codex/config.toml` içinde yönetilen blok | `AGENTS.md` blok |
+| Antigravity | `~/.gemini/config/hooks.json`: `SessionStart`, `PreInvocation` | `~/.gemini/config/mcp_config.json` | `AGENTS.md` blok (Codex ile aynı dosya) |
+| Continue (VS Code) | yok | `<proje>/.continue/mcpServers/middle-agentic.yaml` | `.continue/rules/middle-agentic-memory.md` |
+
+`--scope project` ile hook ve MCP dosyaları projenin `.codex/` ve `.agents/` klasörlerine yazılır. Codex projeleri yalnızca güvenilirse yüklenir.
+
+```bash
+magent integrate codex           # hooks.json + config.toml
+magent integrate antigravity     # mcp_config.json + hooks.json
+magent integrate continue --scope project --project ~/projem
+cd ~/projem && magent rules install   # tüm araçların kuralları: CLAUDE.md, AGENTS.md, .continue/rules/
+```
+
+Codex, non-managed hook'ları yalnızca güvenildikten sonra çalıştırır. `magent integrate codex`'ten sonra CLI'da `/hooks` açıp middle-agentic hook'larını bir kez güvenin; aksi halde atlanırlar.
+
+Antigravity hook'ları olay adını payload'da taşımaz; kurulum her olay için `magent_hook.py antigravity --event <Olay>` çağırır. Antigravity `PreInvocation` payload'ında asistan yanıtı olmadığı için yanıtlar kaydedilmez; `PreInvocation` yalnızca turun ilk çağrısında kullanıcı mesajını kaydeder ve ilgili hafızayı `ephemeralMessage` olarak enjekte eder.
 
 `magent integrate`, `--url` verilmezse `MAGENT_URL`'i, ardından `MAGENT_DEFAULT_NODE`'u kurulum anında çözer (ör. Tailscale IP'si) ve hook komutuna `--url` olarak yazar. Hook scripti de `--url` yoksa aynı sırayı izler.
 

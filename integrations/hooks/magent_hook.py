@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 """Bridge Cursor / Claude Code hook events to a middle-agentic gateway.
 
-Usage (wired by `magent integrate cursor|claude`):
-    magent_hook.py cursor|claude [--url http://node:8000] [--timeout 4]
+Usage (wired by `magent integrate cursor|claude|codex|antigravity`):
+    magent_hook.py cursor|claude|codex [--url http://node:8000] [--timeout 4]
+    magent_hook.py antigravity --event PreInvocation [--url ...]
+
+Antigravity payloads have no event name, so its hook passes --event. Other tools send it in the payload.
 
 Reads the hook payload from stdin, POSTs it to <url>/v1/hooks/<tool>/<event> and prints the
 gateway's answer on stdout in the format the tool expects.
@@ -63,7 +66,8 @@ def neutral_answer(tool, event):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("tool", choices=["cursor", "claude"])
+    parser.add_argument("tool", choices=["cursor", "claude", "codex", "antigravity"])
+    parser.add_argument("--event", default=None, help="event name, for tools whose payload has none (antigravity)")
     parser.add_argument("--url", default=None)
     parser.add_argument("--timeout", type=float, default=float(os.environ.get("MAGENT_HOOK_TIMEOUT", "4")))
     args = parser.parse_args(argv)
@@ -73,7 +77,7 @@ def main(argv=None):
         payload = json.loads(raw) if raw.strip() else {}
     except ValueError:
         payload = {}
-    event = str(payload.get("hook_event_name") or "")
+    event = args.event or str(payload.get("hook_event_name") or "")
 
     answer = neutral_answer(args.tool, event)
     if event:

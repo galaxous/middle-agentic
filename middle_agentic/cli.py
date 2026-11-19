@@ -8,8 +8,9 @@
     magent hook context|record|forget|sessions|graph ...
     magent mcp
     magent service install|uninstall|status
-    magent integrate cursor|claude [--scope user|project]
-    magent rules install|remove|show [--tool cursor|claude|all] [--project DIR]
+    magent integrate cursor|claude|codex|antigravity [--scope user|project] [--url URL]
+    magent integrate continue [--scope user|project]   (MCP only)
+    magent rules install|remove|show [--tool cursor|claude|codex|antigravity|continue|all] [--project DIR]
     magent health [--node acer]
 """
 from __future__ import annotations
@@ -204,12 +205,27 @@ def cmd_integrate(args: argparse.Namespace) -> int:
     from middle_agentic import integrations
 
     project = Path(args.project) if args.project else (Path.cwd() if args.scope == "project" else None)
+    if args.tool == "continue":
+        # MCP only: Continue has no lifecycle hooks in this integration.
+        for written in integrations.install_continue(scope=args.scope, project_dir=project):
+            print(f"updated: {written}")
+        print("MCP only: memory use comes from the rules (magent rules install --tool continue)")
+        print("restart the tool (or reload the window) to pick up the changes")
+        return 0
+
     url = args.url or _default_hook_url()
-    installer = integrations.install_cursor if args.tool == "cursor" else integrations.install_claude
-    for written in installer(scope=args.scope, project_dir=project, url=url):
+    installers = {
+        "cursor": integrations.install_cursor,
+        "claude": integrations.install_claude,
+        "codex": integrations.install_codex,
+        "antigravity": integrations.install_antigravity,
+    }
+    for written in installers[args.tool](scope=args.scope, project_dir=project, url=url):
         print(f"updated: {written}")
     print(f"hooks send events to: {url or 'the local gateway (127.0.0.1)'}")
     print("add memory rules to a project with: magent rules install --project <dir>")
+    if args.tool == "codex":
+        print("Codex: open /hooks in the CLI once and trust the middle-agentic hooks (untrusted hooks are skipped)")
     print("restart the tool (or reload the window) to pick up the changes")
     return 0
 
@@ -221,7 +237,8 @@ def cmd_rules(args: argparse.Namespace) -> int:
     tools = rules.TOOLS if args.tool == "all" else (args.tool,)
     if args.action == "show":
         project_path = os.path.abspath(project)
-        render = rules.cursor_rule if args.tool == "cursor" else rules.memory_instructions
+        renderers = {"cursor": rules.cursor_rule, "continue": rules.continue_rule}
+        render = renderers.get(args.tool, rules.memory_instructions)
         print(render(project_path))
         return 0
     if args.action == "install":
@@ -447,7 +464,7 @@ def build_parser() -> argparse.ArgumentParser:
     service.set_defaults(func=cmd_service)
 
     integrate = sub.add_parser("integrate", help="install hooks + MCP config for Cursor or Claude Code")
-    integrate.add_argument("tool", choices=["cursor", "claude"])
+    integrate.add_argument("tool", choices=["cursor", "claude", "continue", "codex", "antigravity"])
     integrate.add_argument("--scope", choices=["user", "project"], default="user")
     integrate.add_argument("--project", help="project directory for --scope project (default: cwd)")
     integrate.add_argument(
@@ -457,7 +474,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     rules_parser = sub.add_parser("rules", help="write project rules that make Cursor/Claude use the memory tools")
     rules_parser.add_argument("action", choices=["install", "remove", "show"])
-    rules_parser.add_argument("--tool", choices=["cursor", "claude", "all"], default="all")
+    rules_parser.add_argument(
+        "--tool", choices=["cursor", "claude", "codex", "antigravity", "continue", "all"], default="all"
+    )
     rules_parser.add_argument("--project", help="project directory (default: cwd)")
     rules_parser.set_defaults(func=cmd_rules)
     return parser
