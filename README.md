@@ -164,6 +164,7 @@ magent ask "..." --node acer --model local --stream
 magent ask "..." --model free --no-memory      # yalnızca free katmanları, hafızasız
 magent hook record "Postgres'e geçmeye karar verdik" --role decision
 magent hook context "veritabanı kararı"
+magent hook forget "deneme sorusu" [--id ID] [--role user] [--yes]   # --yes olmadan yalnızca listeler
 magent health --node acer
 magent llm pull qwen2.5:7b | list | status
 magent serve                                   # gateway'i ön planda çalıştır
@@ -242,6 +243,7 @@ Hook scripti (`integrations/hooks/magent_hook.py`) yalnızca standart kütüphan
 | `POST /v1/chat/completions` | OpenAI uyumlu chat. `stream: true` desteklenir. |
 | `POST /v1/memory/context` | `{session_id, query, recent_limit?, related_limit?, important_limit?}` alır, bağlam düğümlerini ve hazır metni döner (pre-hook) |
 | `POST /v1/memory/events` | `{session_id, role, content, metadata?, link_to?, relation?}` alır ve düğüm ekler (post-hook) |
+| `POST /v1/memory/forget` | `{session_id, ids?, match?, role?, with_answers?, dry_run?}` ile düğüm siler. Varsayılan `dry_run: true`; eşleşen sorunun cevabı da silinir. |
 | `GET /v1/memory/sessions` | Oturum listesi |
 | `GET /v1/memory/sessions/{id}` | Oturumun grafı (düğümler ve kenarlar) |
 | `POST /v1/hooks/{cursor\|claude}/{event}` | Aracın ham hook payload'unu alır, aracın beklediği formatta cevap döner |
