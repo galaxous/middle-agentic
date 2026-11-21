@@ -132,6 +132,38 @@ Sağlayıcı anahtarları yalnızca **gateway** node'unun `.env` dosyasına yaz�
 
 Anahtarı ekledikten sonra gateway servisini yeniden başlatın (macOS: `launchctl kickstart -k gui/$(id -u)/com.galaxous.magent-gateway`) ve `magent health` ile katmanın `"available": true` olduğunu kontrol edin.
 
+#### Anahtarları işletim sistemi deposunda tutmak (`magent token`)
+
+Düz metin anahtarları `~/.zprofile` veya `.env` içinde tutmak yerine `magent token` ile İşletim sistemi deposuna yazın. Değer hiçbir zaman komut satırı argümanı olarak geçmez ve profil dosyalarına yazılmaz.
+
+| Ortam | Depo | Profil dosyası |
+| --- | --- | --- |
+| macOS | Login Keychain (`security`), servis `<sağlayıcı>-api-key` | `~/.zprofile` (zsh), `~/.bash_profile` (bash) |
+| Windows | `%LOCALAPPDATA%\middle-agentic\secrets\*.dpapi`, DPAPI (yalnızca bu Windows kullanıcısı çözebilir) | `Documents\PowerShell\Microsoft.PowerShell_profile.ps1` |
+
+Sağlayıcılar: `anthropic`, `openai`, `gemini`, `openrouter`.
+
+```bash
+# macOS
+./venv/bin/magent token set openai              # gizli prompt
+./venv/bin/magent token list                    # set / missing, değer göstermez
+./venv/bin/magent token install-shell --shell zsh --dry-run
+./venv/bin/magent token install-shell --shell zsh
+```
+
+```powershell
+# Windows
+python -m middle_agentic token set openai
+python -m middle_agentic token install-shell --shell powershell --dry-run
+python -m middle_agentic token install-shell --shell powershell
+```
+
+- `install-shell` profilin sonuna işaretli bir blok ekler. Bloğun dışındaki satırlara dokunmaz. Düz metin bir `export`/`$env:` satırı varsa uyarır, değerini yazdırmaz; o satırı kendiniz silmelisiniz. Değişiklikten önce `.bak` alınır.
+- Komut tekrar çalıştırılabilir; değişiklik yoksa `no change` yazar.
+- `apiKeyHelper` için `magent token get anthropic` yeterlidir (değeri stdout'a yazar).
+- **Sınır:** macOS'ta VS Code'u Dock'tan, Windows'ta Başlat menüsünden açtığınızda profil dosyaları okunmaz. Bu uygulamalarda anahtar gerekiyorsa uygulamanın kendi yapılandırmasını (ör. `apiKeyHelper`) kullanın ya da uygulamayı terminalden başlatın.
+- Gateway anahtarları hâlâ `.env` dosyasından okur; `magent token` bu okumayı değiştirmez.
+
 Zincir örneği:
 
 ```yaml
@@ -173,6 +205,8 @@ magent integrate cursor | claude [--scope project] [--url http://acer:8000]
 magent integrate codex | antigravity [--scope project] [--url URL]   # hook + MCP
 magent integrate continue [--scope project]                         # yalnızca MCP
 magent rules install | remove | show [--tool cursor|claude|codex|antigravity|continue|all] [--project DIR]
+magent token set | get | delete <provider> | list | env [--shell zsh|bash|powershell]
+magent token install-shell [--shell zsh|bash|powershell] [--profile FILE] [--dry-run]
 magent mcp                                     # MCP server (stdio)
 ```
 
@@ -309,6 +343,10 @@ python3.12 -m venv venv && ./venv/bin/pip install -e ".[dev]"
 ```
 
 Testler LiteLLM'i mock'lar. SDK, MCP server ve hook scripti gerçek bir uvicorn sunucusuna karşı ayrı process'lerde test edilir. `uvicorn gateway:app` geriye uyumluluk için hâlâ çalışır.
+
+### Değişiklik günlüğü
+
+Her özellik, commit atılmadan önce [`docs/changelog/`](docs/changelog/README.md) altında tarihli bir dosyaya işlenir (`YYYY-MM-DD-konu.md`). Dosyalar Durum, Değişenler, Doğrulama ve Açık kalanlar bölümlerinden oluşur. Dizin ve kurallar için [`docs/changelog/README.md`](docs/changelog/README.md) dosyasına bakın.
 
 ## Sorun giderme
 

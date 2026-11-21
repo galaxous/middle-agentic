@@ -11,6 +11,7 @@
     magent integrate cursor|claude|codex|antigravity [--scope user|project] [--url URL]
     magent integrate continue [--scope user|project]   (MCP only)
     magent rules install|remove|show [--tool cursor|claude|codex|antigravity|continue|all] [--project DIR]
+    magent token set|get|delete <provider> | list | env     (API keys in the macOS Keychain)
     magent health [--node acer]
 """
 from __future__ import annotations
@@ -227,6 +228,39 @@ def cmd_integrate(args: argparse.Namespace) -> int:
     if args.tool == "codex":
         print("Codex: open /hooks in the CLI once and trust the middle-agentic hooks (untrusted hooks are skipped)")
     print("restart the tool (or reload the window) to pick up the changes")
+    return 0
+
+
+def cmd_token(args: argparse.Namespace) -> int:
+    from middle_agentic import tokens
+
+    if args.action == "install-shell" and args.provider:
+        return _fail("install-shell takes no provider; it adds lines for all providers")
+    if args.action in ("set", "get", "delete") and not args.provider:
+        return _fail(f"token {args.action} needs a provider: {', '.join(tokens.PROVIDERS)}")
+    try:
+        if args.action == "install-shell":
+            shell = args.shell or ("zsh" if sys.platform == "darwin" else "powershell")
+            target = Path(args.profile).expanduser() if args.profile else tokens.default_profile(shell)
+            for line in tokens.install_shell(target, shell, dry_run=args.dry_run):
+                print(line)
+            return 0
+        if args.action == "env":
+            print(tokens.shell_exports(args.shell or "zsh"))
+            return 0
+        store = tokens.default_store()
+        if args.action == "set":
+            value = sys.stdin.read() if args.stdin else None
+            print(tokens.set_token(store, args.provider, value))
+        elif args.action == "get":
+            # Bare value on stdout so it works as `apiKeyHelper` and inside $(...).
+            print(tokens.get_token(store, args.provider))
+        elif args.action == "delete":
+            print(tokens.delete_token(store, args.provider))
+        elif args.action == "list":
+            print("\n".join(tokens.list_tokens(store)))
+    except tokens.TokenError as exc:
+        return _fail(str(exc))
     return 0
 
 
@@ -479,6 +513,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     rules_parser.add_argument("--project", help="project directory (default: cwd)")
     rules_parser.set_defaults(func=cmd_rules)
+
+    from middle_agentic.tokens import PROVIDERS
+
+    token = sub.add_parser("token", help="store and read API tokens in the macOS Keychain")
+    token.add_argument("action", choices=["set", "get", "delete", "list", "env", "install-shell"])
+    token.add_argument("--shell", choices=["zsh", "bash", "powershell"], help="install-shell/env: shell (default: zsh on macOS, powershell on Windows)")
+    token.add_argument("--profile", help="install-shell: profile file to update (default depends on --shell)")
+    token.add_argument("--dry-run", action="store_true", help="install-shell: show what would change, write nothing")
+    token.add_argument("provider", nargs="?", choices=sorted(PROVIDERS), help="anthropic, openai, gemini, openrouter")
+    token.add_argument("--stdin", action="store_true", help="set: read the value from stdin instead of a prompt")
+    token.set_defaults(func=cmd_token)
     return parser
 
 
