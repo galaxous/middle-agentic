@@ -80,6 +80,12 @@ def fake_llm(monkeypatch: pytest.MonkeyPatch) -> FakeLLM:
     return fake
 
 
+@pytest.fixture(autouse=True)
+def isolated_magent_home(tmp_path_factory, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every test gets its own magent home, so no real .env, config or database is read."""
+    monkeypatch.setenv("MAGENT_HOME", str(tmp_path_factory.mktemp("magent-home")))
+
+
 @pytest.fixture
 def settings(tmp_path, monkeypatch: pytest.MonkeyPatch) -> Settings:
     monkeypatch.setenv("TEST_KEY_A", "key-a")

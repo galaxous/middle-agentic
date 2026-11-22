@@ -16,7 +16,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from middle_agentic.config import PROJECT_ROOT
+from middle_agentic.config import magent_home
 
 SERVICE_NAME = "magent-gateway"
 LAUNCHD_LABEL = "com.galaxous.magent-gateway"
@@ -60,7 +60,7 @@ def _linux_install() -> str:
         "Wants=network-online.target\n\n"
         "[Service]\n"
         "Type=simple\n"
-        f"WorkingDirectory={PROJECT_ROOT}\n"
+        f"WorkingDirectory={magent_home()}\n"
         f"ExecStart={shlex.join(gateway_command())}\n"
         "Environment=PYTHONUNBUFFERED=1\n"
         "Restart=on-failure\n"
@@ -110,7 +110,7 @@ def _macos_install() -> str:
     plist = {
         "Label": LAUNCHD_LABEL,
         "ProgramArguments": gateway_command(),
-        "WorkingDirectory": str(PROJECT_ROOT),
+        "WorkingDirectory": str(magent_home()),
         "RunAtLoad": True,
         "KeepAlive": True,
         "StandardOutPath": str(log_path),
@@ -172,7 +172,7 @@ def _windows_install() -> str:
     )
     script = f"""
 $ErrorActionPreference = 'Stop'
-$action = New-ScheduledTaskAction -Execute {_ps_quote(sys.executable)} -Argument '-m middle_agentic serve' -WorkingDirectory {_ps_quote(str(PROJECT_ROOT))}
+$action = New-ScheduledTaskAction -Execute {_ps_quote(sys.executable)} -Argument '-m middle_agentic serve' -WorkingDirectory {_ps_quote(str(magent_home()))}
 $trigger = {trigger}
 $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable
 $principal = {principal}

@@ -1,0 +1,59 @@
+#!/bin/sh
+# middle-agentic installer (macOS, Linux, Raspberry Pi).
+# Installs magent with pipx from a GitHub Release, checks the wheel's SHA-256, then runs `magent client-setup`.
+set -eu
+
+VERSION="@VERSION@"
+WHEEL="@WHEEL@"
+SHA256="@SHA256@"
+URL="https://github.com/galaxous/middle-agentic/releases/download/v${VERSION}/${WHEEL}"
+
+say() { printf '%s\n' "$*"; }
+die() { printf 'hata: %s\n' "$*" >&2; exit 1; }
+
+command -v python3 >/dev/null 2>&1 || die "python3 gerekli (3.10 veya üzeri)"
+python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)' || die "Python 3.10 veya üzeri gerekli"
+command -v curl >/dev/null 2>&1 || die "curl gerekli"
+
+# The setup wizard asks questions, so it needs a real terminal even when this script arrived through a pipe.
+[ -r /dev/tty ] || die "etkileşimli bir terminal gerekli; kurulumdan sonra 'magent client-setup' komutunu elle çalıştırın"
+
+ensure_pipx() {
+  command -v pipx >/dev/null 2>&1 && return 0
+  say "pipx kuruluyor..."
+  case "$(uname -s)" in
+    Darwin)
+      if command -v brew >/dev/null 2>&1; then brew install pipx; else python3 -m pip install --user pipx; fi ;;
+    Linux)
+      if command -v apt-get >/dev/null 2>&1; then
+        sudo apt-get update && sudo apt-get install -y pipx
+      else
+        python3 -m pip install --user pipx
+      fi ;;
+    *) die "pipx bulunamadı; elle kurup tekrar deneyin" ;;
+  esac
+  python3 -m pipx ensurepath >/dev/null 2>&1 || true
+  command -v pipx >/dev/null 2>&1 || die "pipx kurulamadı"
+}
+ensure_pipx
+
+TMP="$(mktemp -d)"
+trap 'rm -rf "$TMP"' EXIT
+
+say "indiriliyor: $WHEEL"
+curl -fsSL -o "$TMP/$WHEEL" "$URL" || die "indirilemedi: $URL"
+
+if command -v sha256sum >/dev/null 2>&1; then
+  GOT="$(sha256sum "$TMP/$WHEEL" | cut -d' ' -f1)"
+else
+  GOT="$(shasum -a 256 "$TMP/$WHEEL" | cut -d' ' -f1)"
+fi
+[ "$GOT" = "$SHA256" ] || die "SHA-256 eşleşmedi (beklenen $SHA256, gelen $GOT). Kurulum durduruldu, hiçbir şey kurulmadı."
+say "SHA-256 doğrulandı"
+
+pipx install --force "$TMP/$WHEEL"
+BIN_DIR="$(pipx environment --value PIPX_BIN_DIR 2>/dev/null || echo "$HOME/.local/bin")"
+MAGENT="$BIN_DIR/magent"
+[ -x "$MAGENT" ] || die "magent kurulamadı ($MAGENT bulunamadı)"
+
+"$MAGENT" client-setup </dev/tty

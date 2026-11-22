@@ -86,4 +86,4 @@ def test_validation_errors() -> None:
 
 def test_relative_db_path_resolves_to_project_root() -> None:
     settings = Settings()
-    assert settings.memory.resolved_db_path() == config.PROJECT_ROOT / "agent_memory.db"
+    assert settings.memory.resolved_db_path() == config.magent_home() / "agent_memory.db"

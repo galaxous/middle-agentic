@@ -145,7 +145,7 @@ def test_default_store_follows_platform(monkeypatch) -> None:
     assert isinstance(tokens.default_store(), tokens.MacKeychain)
     monkeypatch.setattr(tokens.sys, "platform", "win32")
     assert isinstance(tokens.default_store(), tokens.WindowsVault)
-    monkeypatch.setattr(tokens.sys, "platform", "linux")
+    monkeypatch.setattr(tokens.sys, "platform", "freebsd13")
     with pytest.raises(tokens.TokenError, match="no token store"):
         tokens.default_store()
 
@@ -292,3 +292,63 @@ def test_login_env_refused_off_macos(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(tokens.sys, "platform", "win32")
     with pytest.raises(tokens.TokenError, match="macOS"):
         tokens.install_login_env(keychain_run=lambda *a, **k: None, plist_path=tmp_path / "x.plist")
+
+
+# ---- Linux store ------------------------------------------------------------
+
+class FakeSecretTool:
+    def __init__(self, fail_store: bool = False) -> None:
+        self.items: dict[str, str] = {}
+        self.fail_store = fail_store
+        self.calls: list[list[str]] = []
+
+    def __call__(self, args, input=None, capture_output=False, text=False):
+        self.calls.append(list(args))
+        account = args[args.index("account") + 1]
+        if args[1] == "store":
+            if self.fail_store:
+                return subprocess.CompletedProcess(args, 1, "", "no keyring")
+            self.items[account] = input
+            return subprocess.CompletedProcess(args, 0, "", "")
+        if args[1] == "lookup":
+            return subprocess.CompletedProcess(args, 0 if account in self.items else 1, self.items.get(account, ""), "")
+        existed = self.items.pop(account, None) is not None
+        return subprocess.CompletedProcess(args, 0 if existed else 1, "", "")
+
+
+def test_linux_uses_secret_service_when_a_session_bus_exists(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(tokens.shutil, "which", lambda name: "/usr/bin/secret-tool")
+    fake = FakeSecretTool()
+    store = tokens.LinuxStore(run=fake, directory=tmp_path / "s", session_bus_env=lambda: "unix:path=/run/bus")
+    tokens.set_token(store, "gateway", "mag_linux_value")
+    assert store.backend() == "secret-service"
+    assert tokens.get_token(store, "gateway") == "mag_linux_value"
+    assert not (tmp_path / "s").exists()  # nothing written to disk
+
+
+def test_linux_falls_back_to_a_0600_file_without_a_session_bus(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(tokens.shutil, "which", lambda name: "/usr/bin/secret-tool")
+    fake = FakeSecretTool()
+    store = tokens.LinuxStore(run=fake, directory=tmp_path / "s", session_bus_env=lambda: None)
+    tokens.set_token(store, "gateway", "mag_pi_value")
+    assert store.backend() == "file"
+    assert fake.calls == []  # secret-tool never touched
+    file = tmp_path / "s" / "gateway.key"
+    assert file.read_text(encoding="utf-8") == "mag_pi_value"
+    assert oct(file.stat().st_mode & 0o777) == "0o600"
+    assert tokens.get_token(store, "gateway") == "mag_pi_value"
+    assert tokens.delete_token(store, "gateway") == "deleted gateway token"
+    assert not file.exists()
+
+
+def test_linux_falls_back_to_file_when_secret_tool_store_fails(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(tokens.shutil, "which", lambda name: "/usr/bin/secret-tool")
+    store = tokens.LinuxStore(run=FakeSecretTool(fail_store=True), directory=tmp_path / "s",
+                              session_bus_env=lambda: "unix:path=/run/bus")
+    tokens.set_token(store, "gateway", "mag_fallback")
+    assert (tmp_path / "s" / "gateway.key").read_text(encoding="utf-8") == "mag_fallback"
+
+
+def test_default_store_on_linux_is_the_linux_store(monkeypatch) -> None:
+    monkeypatch.setattr(tokens.sys, "platform", "linux")
+    assert isinstance(tokens.default_store(), tokens.LinuxStore)

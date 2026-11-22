@@ -25,6 +25,8 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from middle_agentic.config import magent_home
+
 # provider -> environment variable the provider's SDK/CLI reads
 PROVIDERS: dict[str, str] = {
     "anthropic": "ANTHROPIC_API_KEY",  # Claude Code, Anthropic SDK
@@ -164,12 +166,80 @@ class WindowsVault:
         return True
 
 
-def default_store() -> MacKeychain | WindowsVault:
+@dataclass
+class LinuxStore:
+    """Secret Service (libsecret, via `secret-tool`) when a desktop session bus is available,
+    otherwise a file owned by the user (mode 0600) in the magent home. Headless machines such as a
+    Raspberry Pi over SSH usually have no session bus, so they get the file.
+    """
+
+    run: Callable[..., subprocess.CompletedProcess] = subprocess.run
+    directory: Path = field(default_factory=lambda: magent_home() / "secrets")
+    session_bus_env: Callable[[], str | None] = field(default=lambda: os.environ.get("DBUS_SESSION_BUS_ADDRESS"))
+
+    def _secret_service_usable(self) -> bool:
+        return bool(shutil.which("secret-tool") and self.session_bus_env())
+
+    def _file(self, provider: str) -> Path:
+        return self.directory / f"{provider}.key"
+
+    def backend(self) -> str:
+        return "secret-service" if self._secret_service_usable() else "file"
+
+    def get(self, provider: str) -> str | None:
+        if self._secret_service_usable():
+            result = self.run(
+                ["secret-tool", "lookup", "service", "middle-agentic", "account", provider],
+                capture_output=True, text=True,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                return result.stdout.strip()
+        file = self._file(provider)
+        if file.is_file():
+            return file.read_text(encoding="utf-8").strip() or None
+        return None
+
+    def set(self, provider: str, value: str) -> None:
+        if not value:
+            raise TokenError("token is empty")
+        if self._secret_service_usable():
+            result = self.run(
+                ["secret-tool", "store", "--label", f"middle-agentic {provider}",
+                 "service", "middle-agentic", "account", provider],
+                input=value, capture_output=True, text=True,
+            )
+            if result.returncode == 0:
+                return
+        self.directory.mkdir(parents=True, exist_ok=True)
+        os.chmod(self.directory, 0o700)
+        file = self._file(provider)
+        # Create with 0600 from the start so the secret is never readable by others, even briefly.
+        descriptor = os.open(file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(value)
+
+    def delete(self, provider: str) -> bool:
+        removed = False
+        if self._secret_service_usable():
+            removed = self.run(
+                ["secret-tool", "clear", "service", "middle-agentic", "account", provider],
+                capture_output=True, text=True,
+            ).returncode == 0
+        file = self._file(provider)
+        if file.is_file():
+            file.unlink()
+            removed = True
+        return removed
+
+
+def default_store() -> MacKeychain | WindowsVault | LinuxStore:
     if sys.platform == "darwin":
         return MacKeychain()
     if sys.platform == "win32":
         return WindowsVault()
-    raise TokenError(f"no token store for platform '{sys.platform}' (supported: macOS, Windows)")
+    if sys.platform.startswith("linux"):
+        return LinuxStore()
+    raise TokenError(f"no token store for platform '{sys.platform}' (supported: macOS, Windows, Linux)")
 
 
 def set_token(store, provider: str, value: str | None = None) -> str:

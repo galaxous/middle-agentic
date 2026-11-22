@@ -9,11 +9,10 @@ import sys
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
-from middle_agentic.config import PROJECT_ROOT
+from middle_agentic.integrations import HOOK_SCRIPT
 
 from conftest import API_KEY
 
-HOOK_SCRIPT = PROJECT_ROOT / "integrations" / "hooks" / "magent_hook.py"
 
 
 def _env(tmp_path, url: str) -> dict[str, str]:

@@ -5,7 +5,8 @@ Cursor, Claude Code, Codex and Antigravity get lifecycle hooks plus MCP. Continu
 
 Configs are merged, never overwritten: existing entries are kept, previous middle-agentic
 entries are replaced, and the original file is saved as ``<file>.bak`` before writing.
-Secrets are not written into these files; the hook script reads them from the repo's .env.
+Secrets are not written into these files; the hook reads the gateway key from the Keychain or the magent home .env.
+The hook script is the one installed with this package, so the installed tool never depends on a source checkout.
 """
 from __future__ import annotations
 
@@ -18,9 +19,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from middle_agentic.config import PROJECT_ROOT
-
-HOOK_SCRIPT = PROJECT_ROOT / "integrations" / "hooks" / "magent_hook.py"
+HOOK_SCRIPT = Path(__file__).resolve().parent / "bridge" / "magent_hook.py"
 MARKER = "magent_hook.py"
 MCP_SERVER_NAME = "middle-agentic"
 

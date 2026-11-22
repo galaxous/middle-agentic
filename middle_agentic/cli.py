@@ -33,7 +33,7 @@ import httpx
 import yaml
 
 from middle_agentic import __version__
-from middle_agentic.config import PROJECT_ROOT, ROLES, find_config_file, load_settings
+from middle_agentic.config import ROLES, find_config_file, load_settings, magent_home
 
 EXIT_ERROR = 1
 
@@ -62,7 +62,7 @@ def _read_prompt(parts: list[str]) -> str:
 
 # ---------------------------------------------------------------------------- setup
 def cmd_setup(args: argparse.Namespace) -> int:
-    config_path = find_config_file() or PROJECT_ROOT / "config.yaml"
+    config_path = find_config_file() or magent_home() / "config.yaml"
     data: dict[str, Any] = {}
     if config_path.is_file():
         data = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
@@ -99,10 +99,7 @@ def cmd_setup(args: argparse.Namespace) -> int:
     config_path.write_text(yaml.safe_dump(data, sort_keys=False, allow_unicode=True), encoding="utf-8")
     print(f"config written: {config_path}")
 
-    env_path = PROJECT_ROOT / ".env"
-    if not env_path.is_file() and (PROJECT_ROOT / ".env.example").is_file():
-        shutil.copy2(PROJECT_ROOT / ".env.example", env_path)
-        print(f".env created from .env.example: {env_path}")
+    env_path = magent_home() / ".env"
 
     if is_gateway:
         print("gateway keys: create one per client with `magent key create <name>` (shown once)")
@@ -330,6 +327,31 @@ def cmd_memory(args: argparse.Namespace) -> int:
         print(f"permanently deleted {asyncio.run(memory.purge_deleted(args.older_than_days))} node(s)")
         return 0
     return _fail("unknown memory action")
+
+
+def cmd_client_setup(args: argparse.Namespace) -> int:
+    """Interactive: gateway address and key, verified against the gateway, then installed on this machine."""
+    import getpass
+
+    import httpx
+
+    from middle_agentic import setup_client, tokens
+
+    key = setup_client.read_key_from_stdin(sys.stdin) if args.key_stdin else None
+    store = tokens.default_store()
+
+    def integrate(url: str) -> int:
+        return cmd_integrate(argparse.Namespace(tool="all", scope="user", project=None, url=url))
+
+    login_env = None
+    if sys.platform == "darwin":
+        login_env = lambda: [print(line) for line in tokens.install_login_env()]  # noqa: E731
+
+    with httpx.Client(timeout=15) as client:
+        return setup_client.run(
+            args.url, key, assume_yes=args.yes, ask=input, secret=getpass.getpass,
+            client=client, store=store, integrate=integrate, login_env=login_env,
+        )
 
 
 def cmd_token(args: argparse.Namespace) -> int:
@@ -624,6 +646,12 @@ def build_parser() -> argparse.ArgumentParser:
     rules_parser.set_defaults(func=cmd_rules)
 
     from middle_agentic.tokens import PROVIDERS
+
+    client_setup = sub.add_parser("client-setup", help="connect this machine to a gateway: asks for address and key, verifies, then installs")
+    client_setup.add_argument("--url", help="gateway address, e.g. 100.68.92.41 or http://host:8000")
+    client_setup.add_argument("--key-stdin", action="store_true", help="read the key from stdin (automation)")
+    client_setup.add_argument("--yes", action="store_true", help="do not ask for the final confirmation")
+    client_setup.set_defaults(func=cmd_client_setup)
 
     key = sub.add_parser("key", help="gateway API keys: create, list, revoke, scopes, expiry, quotas, audit")
     key.add_argument(

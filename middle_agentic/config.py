@@ -3,9 +3,10 @@
 Structure lives in ``config.yaml`` (node roles, model chain, peers); secrets and per-host
 overrides come from environment variables or a ``.env`` file. Environment always wins.
 
-Lookup order for config.yaml: ``$MAGENT_CONFIG`` > ``<project>/config.yaml`` >
-``~/.config/middle-agentic/config.yaml``. The current working directory is deliberately not
-searched: the MCP server and hook scripts run inside arbitrary workspaces.
+Everything magent keeps on this machine lives in one home directory: ``$MAGENT_HOME`` or
+``~/.config/middle-agentic`` (config.yaml, .env, agent_memory.db). The installed package never reads
+or writes the source checkout, so the repository can be moved or deleted after installation.
+The current working directory is deliberately not searched either.
 """
 from __future__ import annotations
 
@@ -17,9 +18,12 @@ from typing import Any, Literal
 import yaml
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-PACKAGE_DIR = Path(__file__).resolve().parent
-PROJECT_ROOT = PACKAGE_DIR.parent
-USER_CONFIG_PATH = Path.home() / ".config" / "middle-agentic" / "config.yaml"
+def magent_home() -> Path:
+    explicit = os.getenv("MAGENT_HOME")
+    return Path(explicit).expanduser() if explicit else Path.home() / ".config" / "middle-agentic"
+
+
+USER_CONFIG_PATH = magent_home() / "config.yaml"
 
 ROLES = ("gateway", "llm", "client")
 TierLabel = Literal["free", "local", "paid", "custom"]
@@ -43,8 +47,7 @@ def load_dotenv(path: Path) -> None:
 
 
 def load_environment() -> None:
-    load_dotenv(PROJECT_ROOT / ".env")
-    load_dotenv(USER_CONFIG_PATH.parent / ".env")
+    load_dotenv(magent_home() / ".env")
 
 
 def _default_node_name() -> str:
@@ -80,7 +83,7 @@ class MemoryConfig(BaseModel):
 
     def resolved_db_path(self) -> Path:
         path = Path(self.db_path).expanduser()
-        return path if path.is_absolute() else PROJECT_ROOT / path
+        return path if path.is_absolute() else magent_home() / path
 
 
 class LLMConfig(BaseModel):
@@ -182,7 +185,7 @@ def find_config_file() -> Path | None:
     explicit = os.getenv("MAGENT_CONFIG")
     if explicit:
         return Path(explicit).expanduser()
-    for candidate in (PROJECT_ROOT / "config.yaml", USER_CONFIG_PATH):
+    for candidate in (magent_home() / "config.yaml",):
         if candidate.is_file():
             return candidate
     return None

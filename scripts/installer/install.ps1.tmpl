@@ -1,0 +1,47 @@
+# middle-agentic installer (Windows).
+# Installs magent with pipx from a GitHub Release, checks the wheel's SHA-256, then runs `magent client-setup`.
+# Usage:  irm https://github.com/galaxous/middle-agentic/releases/download/v@VERSION@/install.ps1 | iex
+$ErrorActionPreference = 'Stop'
+
+$Version = '@VERSION@'
+$Wheel = '@WHEEL@'
+$Sha256 = '@SHA256@'
+$Url = "https://github.com/galaxous/middle-agentic/releases/download/v$Version/$Wheel"
+
+$Python = $null
+$PythonArgs = @()
+foreach ($candidate in @('py', 'python', 'python3')) {
+    if (Get-Command $candidate -ErrorAction SilentlyContinue) {
+        $prefix = if ($candidate -eq 'py') { @('-3') } else { @() }
+        $ok = & $candidate @prefix -c "import sys; print(sys.version_info >= (3, 10))" 2>$null
+        if ($ok -eq 'True') { $Python = $candidate; $PythonArgs = $prefix; break }
+    }
+}
+if (-not $Python) { throw 'Python 3.10 veya üzeri gerekli (https://www.python.org/downloads/)' }
+
+& $Python @PythonArgs -m pipx --version *> $null
+if ($LASTEXITCODE -ne 0) {
+    Write-Host 'pipx kuruluyor...'
+    & $Python @PythonArgs -m pip install --user pipx
+    & $Python @PythonArgs -m pipx ensurepath | Out-Null
+}
+
+$Tmp = Join-Path $env:TEMP "magent-$Version"
+New-Item -ItemType Directory -Force -Path $Tmp | Out-Null
+$File = Join-Path $Tmp $Wheel
+Write-Host "indiriliyor: $Wheel"
+Invoke-WebRequest -Uri $Url -OutFile $File -UseBasicParsing
+
+$Got = (Get-FileHash -Algorithm SHA256 -Path $File).Hash.ToLower()
+if ($Got -ne $Sha256.ToLower()) {
+    Remove-Item -Force $File
+    throw "SHA-256 eşleşmedi (beklenen $Sha256, gelen $Got). Kurulum durduruldu, hiçbir şey kurulmadı."
+}
+Write-Host 'SHA-256 doğrulandı'
+
+& $Python @PythonArgs -m pipx install --force $File
+$BinDir = (& $Python @PythonArgs -m pipx environment --value PIPX_BIN_DIR).Trim()
+$Magent = Join-Path $BinDir 'magent.exe'
+if (-not (Test-Path $Magent)) { throw "magent kurulamadı ($Magent bulunamadı)" }
+
+& $Magent client-setup

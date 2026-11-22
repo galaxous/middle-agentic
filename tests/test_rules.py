@@ -8,7 +8,6 @@ import pytest
 
 from middle_agentic import integrations, rules
 from middle_agentic.cli import main
-from middle_agentic.config import PROJECT_ROOT
 
 
 def test_install_writes_cursor_rule_and_claude_block(tmp_path) -> None:
@@ -181,7 +180,7 @@ def test_codex_install_refuses_duplicate_hand_written_table(tmp_path, monkeypatc
 
 @pytest.fixture
 def hook_module():
-    spec = importlib.util.spec_from_file_location("magent_hook", PROJECT_ROOT / "integrations" / "hooks" / "magent_hook.py")
+    spec = importlib.util.spec_from_file_location("magent_hook", integrations.HOOK_SCRIPT)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)  # type: ignore[union-attr]
     return module

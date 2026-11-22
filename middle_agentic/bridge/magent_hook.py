@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Bridge Cursor / Claude Code hook events to a middle-agentic gateway.
+"""Bridge agent-tool hook events to a middle-agentic gateway. Installed as middle_agentic/bridge/magent_hook.py.
 
 Usage (wired by `magent integrate cursor|claude|codex|antigravity`):
     magent_hook.py cursor|claude|codex [--url http://node:8000] [--timeout 4]
@@ -13,7 +13,7 @@ gateway's answer on stdout in the format the tool expects.
 Fail-open by design: if the gateway is down, slow or misconfigured, a neutral answer is printed
 and the agent continues untouched. Standard library only, so it runs with any Python 3.8+.
 
-Configuration (environment, or the repository's .env file), first match wins:
+Configuration (environment, or the .env file in the magent home directory), first match wins:
     --url                 set by `magent integrate` (the resolved default node)
     MAGENT_URL            gateway base URL
     MAGENT_DEFAULT_NODE   node name or URL; names become http://<name>:$MAGENT_PORT (MagicDNS)
@@ -29,7 +29,8 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+# Everything the hook reads or runs lives outside the source checkout (see middle_agentic.config.magent_home).
+HOME = Path(os.environ.get("MAGENT_HOME") or Path.home() / ".config" / "middle-agentic").expanduser()
 
 
 def load_env(path):
@@ -66,7 +67,7 @@ def stored_api_key():
     try:
         result = subprocess.run(
             [sys.executable, "-m", "middle_agentic", "token", "get", "gateway"],
-            cwd=str(REPO_ROOT), capture_output=True, text=True, timeout=5,
+            cwd=str(Path.home()), capture_output=True, text=True, timeout=5,
         )
     except (OSError, subprocess.SubprocessError):
         return ""
@@ -94,7 +95,7 @@ def main(argv=None):
 
     answer = neutral_answer(args.tool, event)
     if event:
-        load_env(REPO_ROOT / ".env")
+        load_env(HOME / ".env")
         base_url = resolve_base_url(args.url)
         api_key = os.environ.get("MAGENT_API_KEY") or stored_api_key()
         headers = {"Content-Type": "application/json"}
