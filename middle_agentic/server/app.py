@@ -21,6 +21,7 @@ from middle_agentic.memory.graph import GraphMemory
 from middle_agentic.providers.chain import ModelRouter
 from middle_agentic.providers.registry import resolve_chain
 from middle_agentic.server import routes_chat, routes_hooks, routes_memory
+from middle_agentic.server.mcp_http import mcp_lifespan, mount_mcp
 from middle_agentic.server.state import GatewayState, get_state
 
 logger = logging.getLogger("middle_agentic.server")
@@ -54,6 +55,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     state = GatewayState(settings=settings, memory=memory, router=router)
 
+    # Created before the app so the lifespan can start the MCP session manager.
+    mcp_holder: dict[str, Any] = {}
+
     @asynccontextmanager
     async def lifespan(_: FastAPI):
         if settings.memory.enabled:
@@ -63,13 +67,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             logger.info("tier %d %-16s [%s] %s/%s -> %s", index, tier["name"], tier["tier"], tier["runtime"], tier["model"], tier["reason"])
         if not settings.gateway.api_key and not _is_loopback(settings.gateway.host):
             logger.warning("GATEWAY_API_KEY is empty while listening on %s: anyone on the network can use your keys", settings.gateway.host)
-        yield
+        async with mcp_lifespan(mcp_holder["app"]):
+            yield
 
     app = FastAPI(title="Middle-Agent Gateway", version=__version__, lifespan=lifespan)
     app.state.gateway = state
     app.include_router(routes_chat.router)
     app.include_router(routes_memory.router)
     app.include_router(routes_hooks.router)
+    mcp_holder["app"] = mount_mcp(app, state)
 
     @app.get("/health")
     async def health(request: Request) -> dict[str, Any]:

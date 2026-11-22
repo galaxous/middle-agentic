@@ -197,3 +197,25 @@ def test_hook_url_resolution_order(hook_module, monkeypatch) -> None:
     monkeypatch.setenv("MAGENT_URL", "http://gateway:8000")
     assert hook_module.resolve_base_url() == "http://gateway:8000"
     assert hook_module.resolve_base_url("http://explicit:1") == "http://explicit:1"
+
+
+def test_integrate_all_runs_every_tool_and_keeps_going_after_a_failure(tmp_path, monkeypatch, capsys) -> None:
+    from middle_agentic import cli
+
+    calls: list[str] = []
+
+    def recorder(name, fail=False):
+        def install(**_kwargs):
+            calls.append(name)
+            if fail:
+                raise RuntimeError("boom")
+            return [tmp_path / f"{name}.json"]
+        return install
+
+    for name in ("install_cursor", "install_claude", "install_codex", "install_antigravity", "install_continue"):
+        monkeypatch.setattr(integrations, name, recorder(name.removeprefix("install_"), fail=name == "install_codex"))
+    monkeypatch.setattr(cli, "_default_hook_url", lambda: None)
+
+    assert main(["integrate", "all", "--scope", "user"]) == 1  # codex failed
+    assert calls == ["cursor", "claude", "codex", "antigravity", "continue"]
+    assert "failed: codex" in capsys.readouterr().err

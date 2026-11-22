@@ -16,4 +16,6 @@ Her özellik veya önemli değişiklik, **commit atılmadan önce** bu klasöre 
 | --- | --- | --- |
 | [2026-11-19](2026-11-19-memory-search-and-forget.md) | FTS5 arama, hafıza silme | `main'de` (0c74270, 5616bd8, b69e002) |
 | [2026-11-20](2026-11-20-codex-antigravity-integrations.md) | Codex ve Antigravity hook'ları, Continue MCP | `main'de` (b23207f) |
-| [2026-11-21](2026-11-21-api-token-management.md) | `magent token`, shell profil kurulumu, README | `commit bekliyor` |
+| [2026-11-21](2026-11-21-api-token-management.md) | `magent token`, shell profil kurulumu, README | `main'de` (8023d27) |
+| [2026-11-21](2026-11-21-integrate-all.md) | `magent integrate all` | `commit bekliyor` |
+| [2026-11-21](2026-11-21-gateway-mcp-http.md) | Gateway'de HTTP MCP endpoint'i (`/mcp`) | `commit bekliyor` |

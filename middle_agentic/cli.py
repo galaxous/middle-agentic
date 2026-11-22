@@ -8,6 +8,7 @@
     magent hook context|record|forget|sessions|graph ...
     magent mcp
     magent service install|uninstall|status
+    magent integrate all [--scope user|project] [--project DIR] [--url URL]
     magent integrate cursor|claude|codex|antigravity [--scope user|project] [--url URL]
     magent integrate continue [--scope user|project]   (MCP only)
     magent rules install|remove|show [--tool cursor|claude|codex|antigravity|continue|all] [--project DIR]
@@ -202,7 +203,30 @@ def _default_hook_url() -> str | None:
     return None if node.source == "local" else node.url
 
 
+INTEGRATE_ALL = ("cursor", "claude", "codex", "antigravity", "continue")
+
+
 def cmd_integrate(args: argparse.Namespace) -> int:
+    if args.tool == "all":
+        # One failing tool must not stop the others; the exit code reports any failure.
+        import copy
+
+        failed: list[str] = []
+        for tool in INTEGRATE_ALL:
+            print(f"== {tool}")
+            sub_args = copy.copy(args)
+            sub_args.tool = tool
+            try:
+                if cmd_integrate(sub_args) != 0:
+                    failed.append(tool)
+            except Exception as exc:  # report and keep going
+                print(f"error: {tool}: {exc}", file=sys.stderr)
+                failed.append(tool)
+        if failed:
+            print(f"failed: {', '.join(failed)}", file=sys.stderr)
+            return EXIT_ERROR
+        return 0
+
     from middle_agentic import integrations
 
     project = Path(args.project) if args.project else (Path.cwd() if args.scope == "project" else None)
@@ -497,8 +521,8 @@ def build_parser() -> argparse.ArgumentParser:
     service.add_argument("action", choices=["install", "uninstall", "status"])
     service.set_defaults(func=cmd_service)
 
-    integrate = sub.add_parser("integrate", help="install hooks + MCP config for Cursor or Claude Code")
-    integrate.add_argument("tool", choices=["cursor", "claude", "continue", "codex", "antigravity"])
+    integrate = sub.add_parser("integrate", help="install hooks + MCP config for the agent tools (or all of them)")
+    integrate.add_argument("tool", choices=["all", "cursor", "claude", "continue", "codex", "antigravity"])
     integrate.add_argument("--scope", choices=["user", "project"], default="user")
     integrate.add_argument("--project", help="project directory for --scope project (default: cwd)")
     integrate.add_argument(

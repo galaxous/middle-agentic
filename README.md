@@ -253,6 +253,19 @@ magent integrate claude     # ~/.claude/settings.json + claude mcp add (CLI yoks
 cd ~/projem && magent rules install   # .cursor/rules/memory.mdc + CLAUDE.md içine hafıza bloğu
 ```
 
+### Gateway MCP endpoint'i (`/mcp`)
+
+Gateway, MCP protokolünü streamable HTTP üzerinden `/mcp` adresinde de sunar. Araçlar (`ask`, `memory_search`, `memory_record`, `list_nodes`) gateway'in kendi bellek ve model zincirini kullanır; istemcinin yerel Python kurmasına gerek yoktur.
+
+```text
+URL:     http://<gateway>:8000/mcp/
+Header:  Authorization: Bearer <GATEWAY_API_KEY>
+```
+
+- `GATEWAY_API_KEY` tanımlıysa `/mcp` bearer anahtarı ister. Tanımlı değilse endpoint açıktır; gateway zaten uyarır.
+- Anahtar tanımlıyken MCP SDK'nın DNS rebinding kontrolü kapatılır, çünkü Tailscale adresinden erişimi engelliyordu. Anahtar yoksa koruma localhost ile sınırlı kalır.
+- Yerel stdio sunucusu (`magent mcp`) değişmedi.
+
 ### Codex, Antigravity ve Continue
 
 | Araç | Hook (`magent integrate`) | MCP | Kural (`magent rules install`) |
