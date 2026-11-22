@@ -8,10 +8,10 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from middle_agentic.memory.graph import format_context, normalise_session_id
-from middle_agentic.server.auth import require_api_key
+from middle_agentic.server.auth import require_scopes
 from middle_agentic.server.state import GatewayState, require_memory
 
-router = APIRouter(prefix="/v1/memory", dependencies=[Depends(require_api_key)])
+router = APIRouter(prefix="/v1/memory")
 
 
 class ContextRequest(BaseModel):
@@ -31,7 +31,7 @@ class EventRequest(BaseModel):
     relation: str | None = Field(default=None, pattern=r"^[a-z_][a-z0-9_-]{0,31}$")
 
 
-@router.post("/context")
+@router.post("/context", dependencies=[Depends(require_scopes("memory:read"))])
 async def memory_context(body: ContextRequest, state: GatewayState = Depends(require_memory)) -> dict[str, Any]:
     session_id = normalise_session_id(body.session_id)
     rows = await state.memory.fetch_context(
@@ -44,7 +44,7 @@ async def memory_context(body: ContextRequest, state: GatewayState = Depends(req
     }
 
 
-@router.post("/events", status_code=201)
+@router.post("/events", status_code=201, dependencies=[Depends(require_scopes("memory:write"))])
 async def memory_event(body: EventRequest, state: GatewayState = Depends(require_memory)) -> dict[str, Any]:
     session_id = normalise_session_id(body.session_id)
     try:
@@ -65,7 +65,7 @@ class ForgetRequest(BaseModel):
     dry_run: bool = True
 
 
-@router.post("/forget")
+@router.post("/forget", dependencies=[Depends(require_scopes("memory:delete"))])
 async def memory_forget(body: ForgetRequest, state: GatewayState = Depends(require_memory)) -> dict[str, Any]:
     session_id = normalise_session_id(body.session_id)
     try:
@@ -77,14 +77,14 @@ async def memory_forget(body: ForgetRequest, state: GatewayState = Depends(requi
     return {"session_id": session_id, "deleted": not body.dry_run, "nodes": nodes}
 
 
-@router.get("/sessions")
+@router.get("/sessions", dependencies=[Depends(require_scopes("memory:read"))])
 async def memory_sessions(
     limit: int = Query(default=50, ge=1, le=500), state: GatewayState = Depends(require_memory)
 ) -> dict[str, Any]:
     return {"sessions": await state.memory.list_sessions(limit)}
 
 
-@router.get("/sessions/{session_id}")
+@router.get("/sessions/{session_id}", dependencies=[Depends(require_scopes("memory:read"))])
 async def memory_session_graph(
     session_id: str, limit: int = Query(default=200, ge=1, le=2000), state: GatewayState = Depends(require_memory)
 ) -> dict[str, Any]:

@@ -80,7 +80,9 @@ def test_claude_user_install_without_cli_merges_claude_json(tmp_path, monkeypatc
 
     claude_json = json.loads((tmp_path / ".claude.json").read_text(encoding="utf-8"))
     assert claude_json["numStartups"] == 3 and "other" in claude_json["mcpServers"]
-    assert claude_json["mcpServers"]["middle-agentic"]["args"] == ["-m", "middle_agentic", "mcp"]
+    entry = claude_json["mcpServers"]["middle-agentic"]
+    assert entry["type"] == "http" and entry["url"] == "http://100.64.0.2:8000/mcp/"
+    assert entry["headers"]["Authorization"] == "Bearer ${MAGENT_API_KEY}"  # expanded by Claude Code at runtime
     settings = json.loads(written[0].read_text(encoding="utf-8"))
     assert "--url http://100.64.0.2:8000" in settings["hooks"]["Stop"][0]["hooks"][0]["command"]
 
@@ -162,7 +164,8 @@ def test_codex_install_writes_valid_toml_and_is_idempotent(tmp_path, monkeypatch
     assert text.count(integrations.CODEX_BLOCK_START) == 1
     parsed = tomllib.loads(text)
     assert parsed["model"] == "gpt-5" and "other" in parsed["mcp_servers"]
-    assert parsed["mcp_servers"]["middle-agentic"]["args"] == ["-m", "middle_agentic", "mcp"]
+    assert parsed["mcp_servers"]["middle-agentic"]["url"] == "http://127.0.0.1:8000/mcp/"
+    assert parsed["mcp_servers"]["middle-agentic"]["bearer_token_env_var"] == "MAGENT_API_KEY"
     assert config.with_name("config.toml.bak").is_file()
 
 

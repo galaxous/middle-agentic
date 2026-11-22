@@ -99,7 +99,7 @@ def local_node(settings: Settings) -> Node:
         name=settings.node.name,
         url=f"http://127.0.0.1:{settings.gateway.port}",
         source="local",
-        api_key=settings.gateway.api_key or client_api_key(),
+        api_key=client_api_key(),
     )
 
 

@@ -10,8 +10,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
-import secrets
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from typing import Any
 
 from fastapi import FastAPI
@@ -27,6 +26,7 @@ from middle_agentic.client.discovery import discover_nodes
 from middle_agentic.hooks.common import project_session_id
 from middle_agentic.memory.graph import format_context, normalise_session_id
 from middle_agentic.providers.chain import AllTiersFailedError, UnknownModelError
+from middle_agentic.server.auth import bearer_token
 from middle_agentic.server.routes_chat import message_text, post_hook, pre_hook
 from middle_agentic.server.state import GatewayState
 
@@ -134,13 +134,12 @@ def build_gateway_mcp(state: GatewayState) -> _Server:
 def build_mcp_app(state: GatewayState) -> Any:
     """Starlette app serving the MCP protocol at its root; mounted under /mcp by create_app.
 
-    The MCP SDK's DNS-rebinding check only accepts localhost Host headers, which would reject the
-    gateway's Tailscale name or IP. When a gateway API key is set, the bearer key is the gate, so the
-    check is turned off. Without a key the default (localhost only) stays on, and the gateway already
-    warns that it is open to the network.
+    The SDK's DNS-rebinding check accepts only localhost Host headers, which would reject the
+    gateway's Tailscale name or IP. Every request here must carry a gateway API key, so the
+    check is switched off.
     """
     options: dict[str, Any] = {"streamable_http_path": "/"}
-    if state.settings.gateway.api_key and TransportSecuritySettings is not None:
+    if TransportSecuritySettings is not None:
         options["transport_security"] = TransportSecuritySettings(enable_dns_rebinding_protection=False)
     return build_gateway_mcp(state).streamable_http_app(**options)
 
@@ -152,38 +151,103 @@ async def mcp_lifespan(mcp_app: Any) -> AsyncIterator[None]:
         yield
 
 
+# Scope needed for each MCP tool. None means any valid key may call it.
+TOOL_SCOPES: dict[str, str | None] = {
+    "ask": "models",
+    "memory_search": "memory:read",
+    "memory_record": "memory:write",
+    "list_nodes": None,
+}
+MAX_BODY_BYTES = 4 * 1024 * 1024
+
+
+def _tool_names(payload: Any) -> list[str]:
+    items = payload if isinstance(payload, list) else [payload]
+    return [
+        str((item.get("params") or {}).get("name", ""))
+        for item in items
+        if isinstance(item, dict) and item.get("method") == "tools/call"
+    ]
+
+
+async def _read_body(receive: Any) -> bytes:
+    body = b""
+    while True:
+        message = await receive()
+        if message["type"] != "http.request":
+            return body
+        body += message.get("body", b"")
+        if len(body) > MAX_BODY_BYTES:
+            raise ValueError("request body too large")
+        if not message.get("more_body", False):
+            return body
+
+
 class McpGuard:
     """Pure ASGI middleware in front of the whole gateway.
 
     - `/mcp` is rewritten to `/mcp/` so MCP clients do not get a 307 on their POST.
-    - Requests under `/mcp/` need `Authorization: Bearer <GATEWAY_API_KEY>` when a key is configured,
-      the same check the REST endpoints use.
+    - Under `/mcp/` every request needs a known, active key (`lookup` returns its scopes or None).
+    - Each `tools/call` in the JSON-RPC body is checked against TOOL_SCOPES, so a read-only key
+      cannot run `ask` or `memory_record` even on a long-lived session. The body is replayed unchanged.
     """
 
-    def __init__(self, app: Any, api_key: str) -> None:
+    def __init__(self, app: Any, lookup: Callable[[str], frozenset[str] | None]) -> None:
         self.app = app
-        self.api_key = api_key
+        self.lookup = lookup
 
     async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
-        if scope["type"] == "http" and scope["path"] == MCP_PATH:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        if scope["path"] == MCP_PATH:
             scope = {**scope, "path": MCP_PATH + "/", "raw_path": (MCP_PATH + "/").encode()}
-        if scope["type"] == "http" and scope["path"].startswith(MCP_PATH + "/") and self.api_key:
-            headers = dict(scope.get("headers") or [])
-            scheme, _, token = headers.get(b"authorization", b"").decode("latin-1").partition(" ")
-            if scheme.lower() != "bearer" or not secrets.compare_digest(
-                token.strip().encode(), self.api_key.encode()
-            ):
-                response = JSONResponse(
-                    {"detail": "Invalid or missing API key"}, status_code=401, headers={"WWW-Authenticate": "Bearer"}
-                )
-                await response(scope, receive, send)
+        if not scope["path"].startswith(MCP_PATH + "/"):
+            await self.app(scope, receive, send)
+            return
+
+        headers = dict(scope.get("headers") or [])
+        scopes = self.lookup(bearer_token(headers.get(b"authorization", b"").decode("latin-1")))
+        if scopes is None:
+            await JSONResponse(
+                {"detail": "Invalid or missing API key"}, status_code=401, headers={"WWW-Authenticate": "Bearer"}
+            )(scope, receive, send)
+            return
+
+        try:
+            body = await _read_body(receive)
+        except ValueError:
+            await JSONResponse({"detail": "request body too large"}, status_code=413)(scope, receive, send)
+            return
+        try:
+            payload: Any = json.loads(body) if body else None
+        except ValueError:
+            payload = None  # the SDK answers malformed JSON itself
+
+        for name in _tool_names(payload):
+            needed = TOOL_SCOPES.get(name)
+            if needed and needed not in scopes:
+                await JSONResponse(
+                    {"jsonrpc": "2.0", "id": None, "error": {"code": -32001, "message": f"this key lacks scope {needed} for tool {name}"}},
+                    status_code=403,
+                )(scope, receive, send)
                 return
-        await self.app(scope, receive, send)
+
+        replayed = False
+
+        async def replay() -> dict[str, Any]:
+            nonlocal replayed
+            if not replayed:
+                replayed = True
+                return {"type": "http.request", "body": body, "more_body": False}
+            return await receive()
+
+        await self.app(scope, replay, send)
 
 
 def mount_mcp(app: FastAPI, state: GatewayState) -> Any:
     """Mounts /mcp and installs the guard. Returns the MCP sub-app so the caller can run its lifespan."""
     mcp_app = build_mcp_app(state)
     app.mount(MCP_PATH, mcp_app)
-    app.add_middleware(McpGuard, api_key=state.settings.gateway.api_key)
+    app.add_middleware(McpGuard, lookup=state.keys.scopes_for)
     return mcp_app

@@ -18,11 +18,12 @@ Configuration (environment, or the repository's .env file), first match wins:
     MAGENT_URL            gateway base URL
     MAGENT_DEFAULT_NODE   node name or URL; names become http://<name>:$MAGENT_PORT (MagicDNS)
     otherwise             http://127.0.0.1:$GATEWAY_PORT (default port 8000)
-    MAGENT_API_KEY        bearer key (falls back to GATEWAY_API_KEY)
+    MAGENT_API_KEY        bearer key; if unset, read from the Keychain/DPAPI item `gateway` via this python
 """
 import argparse
 import json
 import os
+import subprocess
 import sys
 import urllib.error
 import urllib.request
@@ -60,6 +61,18 @@ def resolve_base_url(explicit=None):
     return "http://127.0.0.1:{}".format(os.environ.get("GATEWAY_PORT", "8000"))
 
 
+def stored_api_key():
+    """Key from the token store, read by the same python that installed the hook (has middle_agentic)."""
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "middle_agentic", "token", "get", "gateway"],
+            cwd=str(REPO_ROOT), capture_output=True, text=True, timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return result.stdout.strip() if result.returncode == 0 else ""
+
+
 def neutral_answer(tool, event):
     return {"continue": True} if (tool, event) == ("cursor", "beforeSubmitPrompt") else {}
 
@@ -83,7 +96,7 @@ def main(argv=None):
     if event:
         load_env(REPO_ROOT / ".env")
         base_url = resolve_base_url(args.url)
-        api_key = os.environ.get("MAGENT_API_KEY") or os.environ.get("GATEWAY_API_KEY", "")
+        api_key = os.environ.get("MAGENT_API_KEY") or stored_api_key()
         headers = {"Content-Type": "application/json"}
         if api_key:
             headers["Authorization"] = "Bearer " + api_key

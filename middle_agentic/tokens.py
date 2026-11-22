@@ -31,6 +31,7 @@ PROVIDERS: dict[str, str] = {
     "openai": "OPENAI_API_KEY",        # Codex CLI, OpenAI SDK
     "gemini": "GEMINI_API_KEY",        # Gemini CLI, Antigravity, Continue
     "openrouter": "OPENROUTER_API_KEY",
+    "gateway": "MAGENT_API_KEY",       # this machine's key for talking to a middle-agentic gateway
 }
 SHELLS = ("zsh", "bash", "powershell")
 BLOCK_START = "# >>> middle-agentic tokens (managed by magent token) >>>"
@@ -277,3 +278,59 @@ def install_shell(path: Path, shell: str, dry_run: bool = False, python_exe: str
         shutil.copy2(path, path.with_name(path.name + ".bak"))
     path.write_text(new_text, encoding="utf-8")
     return report + [f"updated {path} (backup: {path.name}.bak)"]
+
+
+LOGIN_LABEL = "com.galaxous.magent-token-env"
+
+
+def launch_agent_plist(provider: str = "gateway") -> str:
+    """LaunchAgent that exports the Keychain item to the login session, so GUI apps (Cursor, VS Code) see it.
+
+    The plist holds the lookup, not the value: `security` runs at every login.
+    """
+    variable = PROVIDERS[_check_provider(provider)]
+    service = MacKeychain.service(provider)
+    lookup = f'launchctl setenv {variable} "$(/usr/bin/security find-generic-password -a "$(/usr/bin/id -un)" -s {service} -w 2>/dev/null)"'
+    return f"""<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>{LOGIN_LABEL}</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/sh</string>
+        <string>-c</string>
+        <string>{lookup.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")}</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+</dict>
+</plist>
+"""
+
+
+def install_login_env(keychain_run: Callable[..., subprocess.CompletedProcess] = subprocess.run,
+                      plist_path: Path | None = None, uid: int | None = None) -> list[str]:
+    if sys.platform != "darwin":
+        raise TokenError("login environment export is macOS only (LaunchAgent)")
+    plist = plist_path or Path.home() / "Library" / "LaunchAgents" / f"{LOGIN_LABEL}.plist"
+    plist.parent.mkdir(parents=True, exist_ok=True)
+    plist.write_text(launch_agent_plist(), encoding="utf-8")
+    domain = f"gui/{uid if uid is not None else os.getuid()}"
+    keychain_run(["launchctl", "bootout", domain, str(plist)], capture_output=True, text=True)
+    result = keychain_run(["launchctl", "bootstrap", domain, str(plist)], capture_output=True, text=True)
+    if result.returncode != 0:
+        raise TokenError(f"launchctl bootstrap failed: {result.stderr.strip() or 'unknown error'}")
+    return [f"wrote {plist}", "loaded: MAGENT_API_KEY is exported at every login (restart GUI apps once)"]
+
+
+def remove_login_env(keychain_run: Callable[..., subprocess.CompletedProcess] = subprocess.run,
+                     plist_path: Path | None = None, uid: int | None = None) -> list[str]:
+    plist = plist_path or Path.home() / "Library" / "LaunchAgents" / f"{LOGIN_LABEL}.plist"
+    domain = f"gui/{uid if uid is not None else os.getuid()}"
+    keychain_run(["launchctl", "bootout", domain, str(plist)], capture_output=True, text=True)
+    if plist.is_file():
+        plist.unlink()
+        return [f"removed {plist}"]
+    return ["nothing to remove"]

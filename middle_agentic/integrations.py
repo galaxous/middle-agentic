@@ -10,6 +10,7 @@ Secrets are not written into these files; the hook script reads them from the re
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -41,6 +42,15 @@ def hook_command(tool: str, url: str | None = None, event: str | None = None) ->
 
 def mcp_server_entry() -> dict[str, Any]:
     return {"command": sys.executable, "args": ["-m", "middle_agentic", "mcp"]}
+
+
+KEY_ENV = "MAGENT_API_KEY"
+
+
+def gateway_mcp_url(url: str | None = None) -> str:
+    """The gateway's /mcp endpoint: the resolved gateway URL (MAGENT_URL / MAGENT_DEFAULT_NODE) or this machine."""
+    base = (url or f"http://127.0.0.1:{os.environ.get('GATEWAY_PORT', '8000')}").rstrip("/")
+    return f"{base}/mcp/"
 
 
 def _load_json(path: Path, default: dict[str, Any]) -> dict[str, Any]:
@@ -80,9 +90,20 @@ def install_cursor(scope: str = "user", project_dir: Path | None = None, url: st
 
     mcp_path = base / "mcp.json"
     mcp_config = _load_json(mcp_path, {"mcpServers": {}})
-    mcp_config.setdefault("mcpServers", {})[MCP_SERVER_NAME] = mcp_server_entry()
+    mcp_config.setdefault("mcpServers", {})[MCP_SERVER_NAME] = {
+        "url": gateway_mcp_url(url),
+        "headers": {"Authorization": f"Bearer ${{env:{KEY_ENV}}}"},
+    }
     _write_json(mcp_path, mcp_config)
     return [hooks_path, mcp_path]
+
+
+def _claude_http_entry(url: str | None = None) -> dict[str, Any]:
+    return {
+        "type": "http",
+        "url": gateway_mcp_url(url),
+        "headers": {"Authorization": f"Bearer ${{{KEY_ENV}}}"},
+    }
 
 
 def install_claude(scope: str = "user", project_dir: Path | None = None, url: str | None = None) -> list[Path | str]:
@@ -104,13 +125,16 @@ def install_claude(scope: str = "user", project_dir: Path | None = None, url: st
     if scope == "project":
         mcp_path = project_dir.resolve() / ".mcp.json"  # type: ignore[union-attr]
         mcp_config = _load_json(mcp_path, {"mcpServers": {}})
-        mcp_config.setdefault("mcpServers", {})[MCP_SERVER_NAME] = mcp_server_entry()
+        mcp_config.setdefault("mcpServers", {})[MCP_SERVER_NAME] = _claude_http_entry(url)
         _write_json(mcp_path, mcp_config)
         written.append(mcp_path)
     else:
         # User-scope MCP servers live in ~/.claude.json, which the claude CLI owns.
-        entry = mcp_server_entry()
-        command = ["claude", "mcp", "add", "--scope", "user", MCP_SERVER_NAME, "--", entry["command"], *entry["args"]]
+        entry = _claude_http_entry(url)
+        command = [
+            "claude", "mcp", "add", "--transport", "http", "--scope", "user", MCP_SERVER_NAME, entry["url"],
+            "--header", f"Authorization: Bearer ${{{KEY_ENV}}}",
+        ]
         if shutil.which("claude"):
             subprocess.run(["claude", "mcp", "remove", "--scope", "user", MCP_SERVER_NAME], capture_output=True)
             result = subprocess.run(command, capture_output=True, text=True)
@@ -119,7 +143,7 @@ def install_claude(scope: str = "user", project_dir: Path | None = None, url: st
             # Same place `claude mcp add --scope user` writes to.
             claude_json = Path.home() / ".claude.json"
             config = _load_json(claude_json, {})
-            config.setdefault("mcpServers", {})[MCP_SERVER_NAME] = {"type": "stdio", **entry, "env": {}}
+            config.setdefault("mcpServers", {})[MCP_SERVER_NAME] = entry
             _write_json(claude_json, config)
             written.append(claude_json)
     return written
@@ -191,13 +215,13 @@ CODEX_BLOCK_END = "# <<< middle-agentic (managed) <<<"
 _CODEX_BLOCK = re.compile(re.escape(CODEX_BLOCK_START) + r".*?" + re.escape(CODEX_BLOCK_END) + r"\n?", re.DOTALL)
 
 
-def codex_block() -> str:
-    entry = mcp_server_entry()
+def codex_block(url: str | None = None) -> str:
+    # Codex reads the bearer token from the named environment variable; the value never lands in the file.
     return (
         f"{CODEX_BLOCK_START}\n"
         f"[mcp_servers.{MCP_SERVER_NAME}]\n"
-        f"command = {json.dumps(entry['command'])}\n"
-        f"args = {json.dumps(entry['args'])}\n"
+        f"url = {json.dumps(gateway_mcp_url(url))}\n"
+        f"bearer_token_env_var = {json.dumps(KEY_ENV)}\n"
         f"{CODEX_BLOCK_END}\n"
     )
 
@@ -216,9 +240,9 @@ def install_codex(scope: str = "user", project_dir: Path | None = None, url: str
     if path.is_file():
         shutil.copy2(path, path.with_name(path.name + ".bak"))
     if _CODEX_BLOCK.search(existing):
-        updated = _CODEX_BLOCK.sub(lambda _: codex_block(), existing, count=1)
+        updated = _CODEX_BLOCK.sub(lambda _: codex_block(url), existing, count=1)
     else:
-        updated = f"{existing.rstrip()}\n\n{codex_block()}" if existing.strip() else codex_block()
+        updated = f"{existing.rstrip()}\n\n{codex_block(url)}" if existing.strip() else codex_block(url)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(updated, encoding="utf-8")
 

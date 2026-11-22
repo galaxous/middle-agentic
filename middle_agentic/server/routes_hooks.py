@@ -8,12 +8,12 @@ from typing import Any
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
 
 from middle_agentic.hooks import HOOK_HANDLERS
-from middle_agentic.server.auth import require_api_key
+from middle_agentic.server.auth import require_scopes
 from middle_agentic.server.state import get_state
 
 logger = logging.getLogger("middle_agentic.server.hooks")
 
-router = APIRouter(prefix="/v1/hooks", dependencies=[Depends(require_api_key)])
+router = APIRouter(prefix="/v1/hooks", dependencies=[Depends(require_scopes("memory:read", "memory:write"))])
 
 
 @router.post("/{tool}/{event}")

@@ -21,6 +21,7 @@ from middle_agentic.memory.graph import GraphMemory
 from middle_agentic.providers.chain import ModelRouter
 from middle_agentic.providers.registry import resolve_chain
 from middle_agentic.server import routes_chat, routes_hooks, routes_memory
+from middle_agentic.server.api_keys import ApiKeyStore
 from middle_agentic.server.mcp_http import mcp_lifespan, mount_mcp
 from middle_agentic.server.state import GatewayState, get_state
 
@@ -53,7 +54,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         request_timeout=settings.gateway.request_timeout,
         probe_timeout=settings.discovery.probe_timeout,
     )
-    state = GatewayState(settings=settings, memory=memory, router=router)
+    keys = ApiKeyStore(settings.memory.resolved_db_path())
+    state = GatewayState(settings=settings, memory=memory, router=router, keys=keys)
 
     # Created before the app so the lifespan can start the MCP session manager.
     mcp_holder: dict[str, Any] = {}
@@ -65,8 +67,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             logger.info("graph memory ready at %s", memory.db_path)
         for index, tier in enumerate(await router.describe(), start=1):
             logger.info("tier %d %-16s [%s] %s/%s -> %s", index, tier["name"], tier["tier"], tier["runtime"], tier["model"], tier["reason"])
-        if not settings.gateway.api_key and not _is_loopback(settings.gateway.host):
-            logger.warning("GATEWAY_API_KEY is empty while listening on %s: anyone on the network can use your keys", settings.gateway.host)
+        if keys.active_count() == 0:
+            logger.warning("no gateway API keys yet: remote clients get 401 until you run `magent key create <name>`")
+        elif not _is_loopback(settings.gateway.host):
+            logger.info("gateway listens on %s; every request needs a key from `magent key list`", settings.gateway.host)
         async with mcp_lifespan(mcp_holder["app"]):
             yield
 
@@ -85,7 +89,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "service": "middle-agentic",
             "version": __version__,
             "node": {"name": current.settings.node.name, "roles": current.settings.node.roles},
-            "auth_required": bool(current.settings.gateway.api_key),
+            "auth_required": True,
             "memory_enabled": current.memory_enabled,
             "chain": await current.router.describe(),
         }

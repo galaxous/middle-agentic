@@ -11,6 +11,7 @@ from fastapi import HTTPException, Request
 from middle_agentic.config import Settings
 from middle_agentic.hooks import HookDeps
 from middle_agentic.memory.graph import GraphMemory
+from middle_agentic.server.api_keys import ApiKeyStore
 from middle_agentic.providers.chain import ModelRouter
 
 logger = logging.getLogger("middle_agentic.server")
@@ -21,6 +22,7 @@ class GatewayState:
     settings: Settings
     memory: GraphMemory
     router: ModelRouter
+    keys: ApiKeyStore
     _tasks: set[asyncio.Task[Any]] = field(default_factory=set)
 
     @property

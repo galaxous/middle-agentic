@@ -13,9 +13,10 @@ from fastapi.testclient import TestClient
 
 from middle_agentic.config import DiscoveryConfig, GatewayConfig, MemoryConfig, NodeConfig, Settings, TierConfig
 from middle_agentic.providers import chain as chain_module
+from middle_agentic.server.api_keys import SCOPES, ApiKeyStore
 from middle_agentic.server.app import create_app
 
-API_KEY = "secret"
+API_KEY = "mag_test_key_for_tests_only_0123456789"
 AUTH = {"Authorization": f"Bearer {API_KEY}"}
 
 
@@ -83,9 +84,9 @@ def fake_llm(monkeypatch: pytest.MonkeyPatch) -> FakeLLM:
 def settings(tmp_path, monkeypatch: pytest.MonkeyPatch) -> Settings:
     monkeypatch.setenv("TEST_KEY_A", "key-a")
     monkeypatch.setenv("TEST_KEY_B", "key-b")
-    return Settings(
+    settings = Settings(
         node=NodeConfig(name="test-node", roles=["gateway", "client"]),
-        gateway=GatewayConfig(api_key=API_KEY),
+        gateway=GatewayConfig(),
         memory=MemoryConfig(db_path=str(tmp_path / "memory.db")),
         chain=[
             TierConfig(name="primary", tier="free", runtime="openai", model="m-primary", api_key_env="TEST_KEY_A"),
@@ -94,6 +95,9 @@ def settings(tmp_path, monkeypatch: pytest.MonkeyPatch) -> Settings:
         ],
         discovery=DiscoveryConfig(tailscale=False),
     )
+    # The gateway only accepts keys from its own store; the test key goes there like `magent key create`.
+    ApiKeyStore(settings.memory.resolved_db_path()).create("test", scopes=SCOPES, value=API_KEY)
+    return settings
 
 
 @pytest.fixture

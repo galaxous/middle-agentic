@@ -12,7 +12,8 @@
     magent integrate cursor|claude|codex|antigravity [--scope user|project] [--url URL]
     magent integrate continue [--scope user|project]   (MCP only)
     magent rules install|remove|show [--tool cursor|claude|codex|antigravity|continue|all] [--project DIR]
-    magent token set|get|delete <provider> | list | env     (API keys in the macOS Keychain)
+    magent key create|list|revoke [name]                       (gateway API keys, run on the gateway)
+    magent token set|get|delete <provider> | list | env        (keys in the Keychain / DPAPI)
     magent health [--node acer]
 """
 from __future__ import annotations
@@ -21,9 +22,9 @@ import argparse
 import json
 import os
 import re
-import secrets
 import shutil
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -59,28 +60,6 @@ def _read_prompt(parts: list[str]) -> str:
 
 
 # ---------------------------------------------------------------------------- setup
-def _set_env_value(path: Path, key: str, value: str) -> None:
-    lines = path.read_text(encoding="utf-8").splitlines() if path.is_file() else []
-    pattern = re.compile(rf"^\s*#?\s*{re.escape(key)}\s*=")
-    for index, line in enumerate(lines):
-        if pattern.match(line):
-            lines[index] = f"{key}={value}"
-            break
-    else:
-        lines.append(f"{key}={value}")
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-
-
-def _env_file_value(path: Path, key: str) -> str:
-    if not path.is_file():
-        return ""
-    for line in path.read_text(encoding="utf-8").splitlines():
-        stripped = line.strip()
-        if stripped.startswith(f"{key}="):
-            return stripped.split("=", 1)[1].strip().strip("'\"")
-    return ""
-
-
 def cmd_setup(args: argparse.Namespace) -> int:
     config_path = find_config_file() or PROJECT_ROOT / "config.yaml"
     data: dict[str, Any] = {}
@@ -124,11 +103,8 @@ def cmd_setup(args: argparse.Namespace) -> int:
         shutil.copy2(PROJECT_ROOT / ".env.example", env_path)
         print(f".env created from .env.example: {env_path}")
 
-    if is_gateway and gateway.get("host") not in ("127.0.0.1", "localhost") and not _env_file_value(env_path, "GATEWAY_API_KEY"):
-        key = secrets.token_urlsafe(32)
-        _set_env_value(env_path, "GATEWAY_API_KEY", key)
-        print("generated GATEWAY_API_KEY in .env; set the same value as MAGENT_API_KEY on client devices:")
-        print(f"  {key}")
+    if is_gateway:
+        print("gateway keys: create one per client with `magent key create <name>` (shown once)")
 
     settings = load_settings(config_path)
     if settings.has_role("llm") and settings.llm.runtime == "ollama" and not args.no_pull:
@@ -255,6 +231,41 @@ def cmd_integrate(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_key(args: argparse.Namespace) -> int:
+    from middle_agentic.server.api_keys import DEFAULT_SCOPES, ApiKeyError, ApiKeyStore
+
+    settings = load_settings()
+    store = ApiKeyStore(settings.memory.resolved_db_path())
+    try:
+        if args.action == "create":
+            key = store.create(args.name, scopes=args.scopes)
+            print(f"created key '{args.name}' with scopes: {args.scopes or ','.join(DEFAULT_SCOPES)}")
+            print("copy it now; it is not shown again:")
+            print(key)
+            print("on the client: magent token set gateway   (then paste this value)")
+        elif args.action == "set-scopes":
+            if not args.scopes:
+                return _fail("set-scopes needs --scopes")
+            if not store.set_scopes(args.name, args.scopes):
+                return _fail(f"no active key named '{args.name}'")
+            print(f"'{args.name}' now has scopes: {args.scopes}")
+        elif args.action == "list":
+            rows = store.list()
+            if not rows:
+                print("no keys yet: magent key create <name>")
+            for row in rows:
+                status = "revoked" if row["revoked"] else "active"
+                used = "never" if not row["last_used_at"] else time.strftime("%Y-%m-%d %H:%M", time.localtime(row["last_used_at"]))
+                print(f"{row['name']:<24} {status:<8} scopes: {row['scopes'] or '(none)':<36} last used: {used}")
+        elif args.action == "revoke":
+            if not store.revoke(args.name):
+                return _fail(f"no active key named '{args.name}'")
+            print(f"revoked '{args.name}'; it stops working on the next request")
+    except ApiKeyError as exc:
+        return _fail(str(exc))
+    return 0
+
+
 def cmd_token(args: argparse.Namespace) -> int:
     from middle_agentic import tokens
 
@@ -271,6 +282,14 @@ def cmd_token(args: argparse.Namespace) -> int:
             return 0
         if args.action == "env":
             print(tokens.shell_exports(args.shell or "zsh"))
+            return 0
+        if args.action == "login-env":
+            for line in tokens.install_login_env():
+                print(line)
+            return 0
+        if args.action == "login-env-remove":
+            for line in tokens.remove_login_env():
+                print(line)
             return 0
         store = tokens.default_store()
         if args.action == "set":
@@ -540,8 +559,18 @@ def build_parser() -> argparse.ArgumentParser:
 
     from middle_agentic.tokens import PROVIDERS
 
+    key = sub.add_parser("key", help="gateway API keys: create, list, revoke (run on the gateway machine)")
+    key.add_argument("action", choices=["create", "list", "revoke", "set-scopes"])
+    key.add_argument("name", nargs="?", help="key name, e.g. macbook-cursor")
+    key.add_argument(
+        "--scopes",
+        help="comma-separated: memory:read, memory:write, memory:delete, models "
+        "(create default: memory:read,memory:write)",
+    )
+    key.set_defaults(func=cmd_key)
+
     token = sub.add_parser("token", help="store and read API tokens in the macOS Keychain")
-    token.add_argument("action", choices=["set", "get", "delete", "list", "env", "install-shell"])
+    token.add_argument("action", choices=["set", "get", "delete", "list", "env", "install-shell", "login-env", "login-env-remove"])
     token.add_argument("--shell", choices=["zsh", "bash", "powershell"], help="install-shell/env: shell (default: zsh on macOS, powershell on Windows)")
     token.add_argument("--profile", help="install-shell: profile file to update (default depends on --shell)")
     token.add_argument("--dry-run", action="store_true", help="install-shell: show what would change, write nothing")

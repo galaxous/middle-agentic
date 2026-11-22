@@ -18,4 +18,6 @@ Her özellik veya önemli değişiklik, **commit atılmadan önce** bu klasöre 
 | [2026-11-20](2026-11-20-codex-antigravity-integrations.md) | Codex ve Antigravity hook'ları, Continue MCP | `main'de` (b23207f) |
 | [2026-11-21](2026-11-21-api-token-management.md) | `magent token`, shell profil kurulumu, README | `main'de` (8023d27) |
 | [2026-11-21](2026-11-21-integrate-all.md) | `magent integrate all` | `commit bekliyor` |
-| [2026-11-21](2026-11-21-gateway-mcp-http.md) | Gateway'de HTTP MCP endpoint'i (`/mcp`) | `commit bekliyor` |
+| [2026-11-21](2026-11-21-gateway-mcp-http.md) | Gateway'de HTTP MCP endpoint'i (`/mcp`) | `main'de` (d36e1c5) |
+| [2026-11-22](2026-11-22-gateway-keys.md) | İstemci başına gateway anahtarları, Keychain, `GATEWAY_API_KEY` kaldırıldı | `commit bekliyor` |
+| [2026-11-22](2026-11-22-key-scopes.md) | Anahtar kapsamları (okuma, yazma, model, silme) | `commit bekliyor` |

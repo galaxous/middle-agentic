@@ -177,7 +177,7 @@ def test_install_shell_adds_missing_exports_once(monkeypatch, tmp_path) -> None:
 
     report = tokens.install_shell(profile, "zsh", python_exe=PY)
     assert any(line.startswith("updated") for line in report)
-    assert sum(line.startswith("manage") for line in report) == 4
+    assert sum(line.startswith("manage") for line in report) == len(tokens.PROVIDERS)
     assert profile.read_text(encoding="utf-8").startswith("source ~/.profile\nexport HISTCONTROL=erasedups")
     assert (tmp_path / ".zprofile.bak").is_file()
 
@@ -262,3 +262,33 @@ def test_cli_install_shell_dry_run(monkeypatch, tmp_path, capsys) -> None:
 def test_cli_env_powershell_prints_block(capsys) -> None:
     assert main(["token", "env", "--shell", "powershell"]) == 0
     assert "$env:ANTHROPIC_API_KEY" in capsys.readouterr().out
+
+
+def test_login_env_plist_holds_lookup_not_secret(monkeypatch) -> None:
+    monkeypatch.setattr(tokens.sys, "platform", "darwin")
+    plist = tokens.launch_agent_plist()
+    assert "launchctl setenv MAGENT_API_KEY" in plist
+    assert "-s gateway-api-key" in plist
+    assert "mag_" not in plist and "<key>RunAtLoad</key>" in plist
+
+
+def test_login_env_install_and_remove(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(tokens.sys, "platform", "darwin")
+    calls: list[list[str]] = []
+
+    def fake_launchctl(args, **_kwargs):
+        calls.append(list(args))
+        return subprocess.CompletedProcess(args, 0, "", "")
+
+    plist = tmp_path / "LaunchAgents" / "x.plist"
+    tokens.install_login_env(keychain_run=fake_launchctl, plist_path=plist, uid=501)
+    assert plist.is_file()
+    assert ["launchctl", "bootstrap", "gui/501", str(plist)] in calls
+    assert tokens.remove_login_env(keychain_run=fake_launchctl, plist_path=plist, uid=501)[0].startswith("removed")
+    assert not plist.exists()
+
+
+def test_login_env_refused_off_macos(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(tokens.sys, "platform", "win32")
+    with pytest.raises(tokens.TokenError, match="macOS"):
+        tokens.install_login_env(keychain_run=lambda *a, **k: None, plist_path=tmp_path / "x.plist")

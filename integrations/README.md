@@ -16,4 +16,4 @@ magent integrate cursor --url http://acer-worker:8000   # hook'ları başka bir 
 | `cursor/hooks.json`, `cursor/mcp.json` | Cursor için örnek yapılandırma |
 | `claude/settings.json`, `claude/mcp.json` | Claude Code için örnek yapılandırma |
 
-Gizli anahtarlar bu dosyalara yazılmaz. Hook scripti `MAGENT_URL` ve `MAGENT_API_KEY` (yoksa `GATEWAY_API_KEY`) değerlerini ortam değişkenlerinden ya da reponun `.env` dosyasından okur.
+Gizli anahtarlar bu dosyalara yazılmaz. Hook scripti `MAGENT_URL` değerini ortam değişkeninden ya da `.env` dosyasından okur. Anahtarı `MAGENT_API_KEY` ortam değişkeninden, yoksa Keychain/DPAPI'deki `gateway` kaydından alır.

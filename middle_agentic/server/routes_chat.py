@@ -15,12 +15,12 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from middle_agentic.memory.graph import format_context, normalise_session_id
 from middle_agentic.providers.chain import AllTiersFailedError, StreamResult, UnknownModelError
-from middle_agentic.server.auth import require_api_key
+from middle_agentic.server.auth import require_scopes
 from middle_agentic.server.state import GatewayState, get_state
 
 logger = logging.getLogger("middle_agentic.server.chat")
 
-router = APIRouter(prefix="/v1", dependencies=[Depends(require_api_key)])
+router = APIRouter(prefix="/v1", dependencies=[Depends(require_scopes("models"))])
 
 # Client-supplied params forwarded to the provider. Anything else (api_key, api_base, ...) is
 # dropped so a caller can never redirect the gateway's credentials to another endpoint.

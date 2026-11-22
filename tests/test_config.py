@@ -53,13 +53,13 @@ def test_yaml_with_env_overrides(tmp_path, monkeypatch: pytest.MonkeyPatch) -> N
         encoding="utf-8",
     )
     monkeypatch.setenv("GATEWAY_PORT", "9100")
-    monkeypatch.setenv("GATEWAY_API_KEY", "k")
+    monkeypatch.setenv("GATEWAY_API_KEY", "ignored-old-shared-secret")
     settings = load_settings(path)
     assert settings.node.name == "acer"
     assert settings.node.roles == ["gateway", "llm"]
     assert settings.gateway.host == "0.0.0.0"
     assert settings.gateway.port == 9100
-    assert settings.gateway.api_key == "k"
+    assert not hasattr(settings.gateway, "api_key")  # the shared GATEWAY_API_KEY is gone
     assert next(t for t in settings.chain if t.name == "local").model == "qwen2.5:7b"
     assert settings.peers[0].name == "pi"
 

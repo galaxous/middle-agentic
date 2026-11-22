@@ -92,11 +92,39 @@ Repoyu klonlamadan yalnızca SSH, Tailscale ve Ollama kurmak için yönetici Pow
 
 ```bash
 python3 bootstrap.py --pubkey "$(cat ~/.ssh/id_ed25519.pub)" --roles client --ts-authkey tskey-auth-...
-echo "MAGENT_API_KEY=<gateway kurulumunda üretilen anahtar>" >> .env
+./venv/bin/magent token set gateway        # gateway'de üretilen anahtarı gizli prompt'a yapıştırın
 ./venv/bin/magent nodes
 ```
 
-Gateway kurulumu `.env` içinde `GATEWAY_API_KEY` üretir ve ekrana yazar. Aynı değeri istemcilerde `MAGENT_API_KEY` olarak tanımlayın.
+Gateway'in her istemci için ayrı anahtarı vardır ve her anahtarın yalnızca ihtiyaç duyduğu kapsamları olur:
+
+| Kapsam | Ne yapar | Varsayılan |
+| --- | --- | --- |
+| `memory:read` | Hafıza araması, bağlam, oturum listesi | evet |
+| `memory:write` | Kayıt yazma, hook'lar | evet |
+| `models` | Sohbet ve MCP `ask` (provider maliyeti) | hayır |
+| `memory:delete` | Uzaktan `forget` | hayır |
+
+```bash
+magent key create macbook-cursor --scopes memory:read,memory:write,models
+magent key set-scopes macbook-cursor --scopes memory:read,memory:write   # kapsamı daralt
+```
+
+Hook'lar okuma ve yazma kapsamı ister; Cursor'un `ask` aracı `models` ister. Gateway makinesinde `magent key create <ad>` anahtarı bir kez gösterir; istemcide `magent token set gateway` ile Keychain'e (macOS) ya da DPAPI'ye (Windows) yazılır. Bu depo ortam değişkenlerinden önce kullanılmaz; gerekirse `MAGENT_API_KEY` ortamdan okunur.
+
+Gateway'de anahtar listesi ve iptal:
+
+```bash
+magent key list
+magent key revoke <ad>      # iptal anında etkili olur
+```
+
+GUI uygulamaları (Cursor, VS Code) terminal profilini okumadığı için anahtarı oturum ortamına taşıyan LaunchAgent'ı bir kez kurun (yalnızca macOS):
+
+```bash
+./venv/bin/magent token login-env           # her girişte Keychain'den MAGENT_API_KEY'i ayarlar
+./venv/bin/magent token login-env-remove    # kaldırmak için
+```
 
 ### Bootstrap bayrakları
 
@@ -120,7 +148,7 @@ Ortam değişkenleri her zaman `config.yaml` değerlerinin önüne geçer. Eski 
 
 ### API anahtarları
 
-Sağlayıcı anahtarları yalnızca **gateway** node'unun `.env` dosyasına yazılır, çünkü modelleri çağıran o makinedir. İstemci cihazlara sadece `MAGENT_API_KEY` gerekir. Anahtarı tanımlı olmayan katman zincirde atlanır.
+Sağlayıcı anahtarları yalnızca **gateway** node'unun `.env` dosyasına yazılır, çünkü modelleri çağıran o makinedir. İstemci cihazlara yalnızca gateway anahtarı gerekir (`magent token set gateway`). Anahtarı tanımlı olmayan katman zincirde atlanır.
 
 | Değişken | Nereden alınır | Not |
 | --- | --- | --- |
@@ -237,7 +265,7 @@ with MiddleAgentClient(node="acer", session_id="research") as client:
 ```python
 from openai import OpenAI
 
-client = OpenAI(base_url="http://acer:8000/v1", api_key="<GATEWAY_API_KEY>")
+client = OpenAI(base_url="http://acer:8000/v1", api_key="<magent key create ile üretilen anahtar>")
 reply = client.chat.completions.create(
     model="auto",
     messages=[{"role": "user", "content": "Selam"}],
@@ -259,11 +287,11 @@ Gateway, MCP protokolünü streamable HTTP üzerinden `/mcp` adresinde de sunar.
 
 ```text
 URL:     http://<gateway>:8000/mcp/
-Header:  Authorization: Bearer <GATEWAY_API_KEY>
+Header:  Authorization: Bearer <magent key create ile üretilen anahtar>
 ```
 
-- `GATEWAY_API_KEY` tanımlıysa `/mcp` bearer anahtarı ister. Tanımlı değilse endpoint açıktır; gateway zaten uyarır.
-- Anahtar tanımlıyken MCP SDK'nın DNS rebinding kontrolü kapatılır, çünkü Tailscale adresinden erişimi engelliyordu. Anahtar yoksa koruma localhost ile sınırlı kalır.
+- Her istek, gateway'in anahtar deposundaki aktif bir anahtarla gelmelidir (`magent key create`). Paylaşılan tek bir `GATEWAY_API_KEY` yoktur.
+- MCP SDK'nın DNS rebinding kontrolü kapalıdır; Tailscale adından erişimi engellemesin diye. Güvenlik bearer anahtarla sağlanır.
 - Yerel stdio sunucusu (`magent mcp`) değişmedi.
 
 ### Codex, Antigravity ve Continue

@@ -67,7 +67,6 @@ class NodeConfig(BaseModel):
 class GatewayConfig(BaseModel):
     host: str = "127.0.0.1"
     port: int = 8000
-    api_key: str = ""
     request_timeout: float = 60.0
 
 
@@ -197,7 +196,6 @@ def _apply_env_overrides(data: dict[str, Any]) -> None:
     overrides: list[tuple[str, tuple[str, str], Any]] = [
         ("GATEWAY_HOST", ("gateway", "host"), str),
         ("GATEWAY_PORT", ("gateway", "port"), int),
-        ("GATEWAY_API_KEY", ("gateway", "api_key"), str),
         ("REQUEST_TIMEOUT", ("gateway", "request_timeout"), float),
         ("MEMORY_ENABLED", ("memory", "enabled"), _env_bool),
         ("MEMORY_DB_PATH", ("memory", "db_path"), str),
@@ -243,6 +241,18 @@ def load_settings(path: Path | None = None) -> Settings:
 
 
 def client_api_key() -> str:
-    """Key a client presents to other gateways (shared tailnet key by default)."""
+    """Key this machine presents to gateways: MAGENT_API_KEY if set, else the Keychain/DPAPI item `gateway`.
+
+    The Keychain is read only when no environment value exists, and any failure there (no store on
+    this platform, item missing) yields an empty string, so callers get a plain 401 instead of a crash.
+    """
     load_environment()
-    return os.getenv("MAGENT_API_KEY") or os.getenv("GATEWAY_API_KEY", "")
+    value = os.getenv("MAGENT_API_KEY", "").strip()
+    if value:
+        return value
+    try:
+        from middle_agentic import tokens
+
+        return tokens.get_token(tokens.default_store(), "gateway")
+    except Exception:  # noqa: BLE001 - no key is a normal state; the request then fails with 401
+        return ""
