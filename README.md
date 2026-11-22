@@ -110,7 +110,24 @@ magent key create macbook-cursor --scopes memory:read,memory:write,models
 magent key set-scopes macbook-cursor --scopes memory:read,memory:write   # kapsamı daralt
 ```
 
-Hook'lar okuma ve yazma kapsamı ister; Cursor'un `ask` aracı `models` ister. Gateway makinesinde `magent key create <ad>` anahtarı bir kez gösterir; istemcide `magent token set gateway` ile Keychain'e (macOS) ya da DPAPI'ye (Windows) yazılır. Bu depo ortam değişkenlerinden önce kullanılmaz; gerekirse `MAGENT_API_KEY` ortamdan okunur.
+Hook'lar okuma ve yazma kapsamı ister; Cursor'un `ask` aracı `models` ister.
+
+Her anahtarın ayrıca bir süresi (varsayılan 90 gün, `--expires-days 0` süresiz), isteğe bağlı kotaları (`--per-minute`, `--daily-limit`) vardır. Süresi dolan anahtar 401, kota aşımı 429 alır:
+
+```bash
+magent key renew macbook-cursor --expires-days 90
+magent key set-limits macbook-cursor --daily-limit 2000 --per-minute 60
+magent key audit macbook-cursor --hours 24     # kim, ne zaman, hangi yol/araç, hangi sonuç
+```
+
+Her HTTP isteği (`/health` hariç) `api_audit` tablosuna yazılır. Kimliği doğrulanamayan denemeler de anahtar `-` ile kaydedilir.
+
+**Bellek silme (soft delete):** `forget` kayıtları silmez; silinen kayıt, işlemi yapan anahtar ve gerekçe ile saklanır. Aramalar ve bağlam silinmiş kayıtları görmez. Gateway makinesinde incelemek için:
+
+```bash
+magent memory deleted --session <oturum>
+magent memory purge --older-than-days 365 --yes   # saklama süresi dolanları kalıcı siler
+``` Gateway makinesinde `magent key create <ad>` anahtarı bir kez gösterir; istemcide `magent token set gateway` ile Keychain'e (macOS) ya da DPAPI'ye (Windows) yazılır. Bu depo ortam değişkenlerinden önce kullanılmaz; gerekirse `MAGENT_API_KEY` ortamdan okunur.
 
 Gateway'de anahtar listesi ve iptal:
 

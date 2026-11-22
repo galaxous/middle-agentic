@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from middle_agentic.memory.graph import format_context, normalise_session_id
+from middle_agentic.server.audit import current_key
 from middle_agentic.server.auth import require_scopes
 from middle_agentic.server.state import GatewayState, require_memory
 
@@ -63,14 +64,17 @@ class ForgetRequest(BaseModel):
     role: str | None = Field(default=None, pattern=r"^[a-z_][a-z0-9_-]{0,31}$")
     with_answers: bool = True
     dry_run: bool = True
+    reason: str | None = Field(default=None, max_length=200)
 
 
 @router.post("/forget", dependencies=[Depends(require_scopes("memory:delete"))])
 async def memory_forget(body: ForgetRequest, state: GatewayState = Depends(require_memory)) -> dict[str, Any]:
     session_id = normalise_session_id(body.session_id)
     try:
+        # Soft delete: the row stays for investigation, tagged with the key that removed it.
         nodes = await state.memory.forget(
-            session_id, body.ids, body.match, body.role, body.with_answers, body.dry_run
+            session_id, body.ids, body.match, body.role, body.with_answers, body.dry_run,
+            actor=current_key() or "local", reason=body.reason,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

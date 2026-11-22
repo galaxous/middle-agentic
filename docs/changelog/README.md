@@ -21,3 +21,4 @@ Her özellik veya önemli değişiklik, **commit atılmadan önce** bu klasöre 
 | [2026-11-21](2026-11-21-gateway-mcp-http.md) | Gateway'de HTTP MCP endpoint'i (`/mcp`) | `main'de` (d36e1c5) |
 | [2026-11-22](2026-11-22-gateway-keys.md) | İstemci başına gateway anahtarları, Keychain, `GATEWAY_API_KEY` kaldırıldı | `commit bekliyor` |
 | [2026-11-22](2026-11-22-key-scopes.md) | Anahtar kapsamları (okuma, yazma, model, silme) | `commit bekliyor` |
+| [2026-11-23](2026-11-23-key-lifecycle-and-soft-delete.md) | Anahtar süresi, kotalar, istek kaydı, soft delete | `commit bekliyor` |

@@ -26,6 +26,8 @@ from middle_agentic.client.discovery import discover_nodes
 from middle_agentic.hooks.common import project_session_id
 from middle_agentic.memory.graph import format_context, normalise_session_id
 from middle_agentic.providers.chain import AllTiersFailedError, UnknownModelError
+from middle_agentic.server.api_keys import Denied, KeyRecord
+from middle_agentic.server.audit import note
 from middle_agentic.server.auth import bearer_token
 from middle_agentic.server.routes_chat import message_text, post_hook, pre_hook
 from middle_agentic.server.state import GatewayState
@@ -192,9 +194,9 @@ class McpGuard:
       cannot run `ask` or `memory_record` even on a long-lived session. The body is replayed unchanged.
     """
 
-    def __init__(self, app: Any, lookup: Callable[[str], frozenset[str] | None]) -> None:
+    def __init__(self, app: Any, authorize: Callable[[str], KeyRecord]) -> None:
         self.app = app
-        self.lookup = lookup
+        self.authorize = authorize
 
     async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
         if scope["type"] != "http":
@@ -207,12 +209,14 @@ class McpGuard:
             return
 
         headers = dict(scope.get("headers") or [])
-        scopes = self.lookup(bearer_token(headers.get(b"authorization", b"").decode("latin-1")))
-        if scopes is None:
-            await JSONResponse(
-                {"detail": "Invalid or missing API key"}, status_code=401, headers={"WWW-Authenticate": "Bearer"}
-            )(scope, receive, send)
+        try:
+            record = self.authorize(bearer_token(headers.get(b"authorization", b"").decode("latin-1")))
+        except Denied as exc:
+            headers_out = {"WWW-Authenticate": "Bearer"} if exc.status_code == 401 else None
+            await JSONResponse({"detail": exc.detail}, status_code=exc.status_code, headers=headers_out)(scope, receive, send)
             return
+        scopes = record.scopes
+        note(key=record.name)
 
         try:
             body = await _read_body(receive)
@@ -224,7 +228,10 @@ class McpGuard:
         except ValueError:
             payload = None  # the SDK answers malformed JSON itself
 
-        for name in _tool_names(payload):
+        names = _tool_names(payload)
+        if names:
+            note(tool=",".join(names))
+        for name in names:
             needed = TOOL_SCOPES.get(name)
             if needed and needed not in scopes:
                 await JSONResponse(
@@ -249,5 +256,5 @@ def mount_mcp(app: FastAPI, state: GatewayState) -> Any:
     """Mounts /mcp and installs the guard. Returns the MCP sub-app so the caller can run its lifespan."""
     mcp_app = build_mcp_app(state)
     app.mount(MCP_PATH, mcp_app)
-    app.add_middleware(McpGuard, lookup=state.keys.scopes_for)
+    app.add_middleware(McpGuard, authorize=state.keys.authorize)
     return mcp_app

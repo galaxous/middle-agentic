@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import os
 import re
@@ -232,38 +233,103 @@ def cmd_integrate(args: argparse.Namespace) -> int:
 
 
 def cmd_key(args: argparse.Namespace) -> int:
-    from middle_agentic.server.api_keys import DEFAULT_SCOPES, ApiKeyError, ApiKeyStore
+    from middle_agentic.server.api_keys import DEFAULT_EXPIRY_DAYS, DEFAULT_SCOPES, ApiKeyError, ApiKeyStore
+    from middle_agentic.server.audit import AuditLog
 
     settings = load_settings()
-    store = ApiKeyStore(settings.memory.resolved_db_path())
+    db = settings.memory.resolved_db_path()
+    audit = AuditLog(db)
+    store = ApiKeyStore(db, audit=audit)
     try:
         if args.action == "create":
-            key = store.create(args.name, scopes=args.scopes)
-            print(f"created key '{args.name}' with scopes: {args.scopes or ','.join(DEFAULT_SCOPES)}")
-            print("copy it now; it is not shown again:")
+            expires = args.expires_days if args.expires_days is not None else DEFAULT_EXPIRY_DAYS
+            key = store.create(
+                args.name, scopes=args.scopes, expires_days=expires,
+                daily_limit=args.daily_limit, per_minute=args.per_minute,
+            )
+            print(f"created key '{args.name}'")
+            print(f"  scopes:    {args.scopes or ','.join(DEFAULT_SCOPES)}")
+            print(f"  expires:   {'never' if not expires else f'in {expires:g} days'}")
+            print(f"  limits:    {args.per_minute or 'none'}/min, {args.daily_limit or 'none'}/day")
+            print("copy the key now; it is not shown again:")
             print(key)
             print("on the client: magent token set gateway   (then paste this value)")
+        elif args.action == "list":
+            rows = store.list()
+            if not rows:
+                print("no keys yet: magent key create <name>")
+            for row in rows:
+                status = "revoked" if row["revoked"] else ("expired" if row["expires_at"] and row["expires_at"] <= time.time() else "active")
+                expires = "never" if not row["expires_at"] else time.strftime("%Y-%m-%d", time.localtime(row["expires_at"]))
+                used = "never" if not row["last_used_at"] else time.strftime("%Y-%m-%d %H:%M", time.localtime(row["last_used_at"]))
+                print(f"{row['name']:<20} {status:<8} expires {expires:<10} scopes {row['scopes'] or '(none)':<38} "
+                      f"limits {row['per_minute'] or '-'}/min {row['daily_limit'] or '-'}/day  last used {used}")
+        elif args.action == "revoke":
+            if not store.revoke(args.name):
+                return _fail(f"no active key named '{args.name}'")
+            print(f"revoked '{args.name}'; it stops working on the next request")
         elif args.action == "set-scopes":
             if not args.scopes:
                 return _fail("set-scopes needs --scopes")
             if not store.set_scopes(args.name, args.scopes):
                 return _fail(f"no active key named '{args.name}'")
             print(f"'{args.name}' now has scopes: {args.scopes}")
-        elif args.action == "list":
-            rows = store.list()
-            if not rows:
-                print("no keys yet: magent key create <name>")
-            for row in rows:
-                status = "revoked" if row["revoked"] else "active"
-                used = "never" if not row["last_used_at"] else time.strftime("%Y-%m-%d %H:%M", time.localtime(row["last_used_at"]))
-                print(f"{row['name']:<24} {status:<8} scopes: {row['scopes'] or '(none)':<36} last used: {used}")
-        elif args.action == "revoke":
-            if not store.revoke(args.name):
+        elif args.action == "renew":
+            if args.expires_days is None:
+                return _fail("renew needs --expires-days (0 = never)")
+            if not store.renew(args.name, args.expires_days):
                 return _fail(f"no active key named '{args.name}'")
-            print(f"revoked '{args.name}'; it stops working on the next request")
+            print(f"'{args.name}' renewed: {'never expires' if not args.expires_days else f'valid for {args.expires_days:g} days'}")
+        elif args.action == "set-limits":
+            if args.daily_limit is None and args.per_minute is None:
+                return _fail("set-limits needs --daily-limit and/or --per-minute (0 removes a limit)")
+            if not store.set_limits(args.name, args.daily_limit, args.per_minute):
+                return _fail(f"no active key named '{args.name}'")
+            print(f"'{args.name}' limits updated")
+        elif args.action == "audit":
+            rows = audit.query(key=args.name, hours=args.hours, limit=args.limit)
+            if not rows:
+                print("no requests in this window")
+            for row in rows:
+                when = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(row["ts"]))
+                tool = f" tool={row['tool']}" if row["tool"] else ""
+                print(f"{when}  {row['key_name']:<18} {row['status']}  {row['method']} {row['path']}{tool}  from {row['client'] or '-'}")
+        elif args.action == "audit-purge":
+            if args.older_than_days is None:
+                return _fail("audit-purge needs --older-than-days")
+            if not args.yes:
+                print(f"dry run: would delete audit rows older than {args.older_than_days:g} days (add --yes)")
+                return 0
+            print(f"deleted {audit.purge(args.older_than_days)} audit row(s)")
     except ApiKeyError as exc:
         return _fail(str(exc))
     return 0
+
+
+def cmd_memory(args: argparse.Namespace) -> int:
+    from middle_agentic.memory.graph import GraphMemory
+
+    settings = load_settings()
+    memory = GraphMemory(settings.memory.resolved_db_path())
+    asyncio.run(memory.initialize())  # creates the tables on a fresh database
+    if args.action == "deleted":
+        rows = asyncio.run(memory.list_deleted(args.session, args.limit))
+        if not rows:
+            print("no soft-deleted memory")
+        for row in rows:
+            when = time.strftime("%Y-%m-%d %H:%M", time.localtime(row["deleted_at"]))
+            snippet = " ".join(row["content"].split())[:90]
+            print(f"{when}  by {row['deleted_by'] or '-':<18} reason {row['delete_reason'] or '-':<20} [{row['role']}] {snippet}")
+        return 0
+    if args.action == "purge":
+        if args.older_than_days is None:
+            return _fail("purge needs --older-than-days")
+        if not args.yes:
+            print(f"dry run: would permanently delete soft-deleted memory older than {args.older_than_days:g} days (add --yes)")
+            return 0
+        print(f"permanently deleted {asyncio.run(memory.purge_deleted(args.older_than_days))} node(s)")
+        return 0
+    return _fail("unknown memory action")
 
 
 def cmd_token(args: argparse.Namespace) -> int:
@@ -559,15 +625,32 @@ def build_parser() -> argparse.ArgumentParser:
 
     from middle_agentic.tokens import PROVIDERS
 
-    key = sub.add_parser("key", help="gateway API keys: create, list, revoke (run on the gateway machine)")
-    key.add_argument("action", choices=["create", "list", "revoke", "set-scopes"])
-    key.add_argument("name", nargs="?", help="key name, e.g. macbook-cursor")
+    key = sub.add_parser("key", help="gateway API keys: create, list, revoke, scopes, expiry, quotas, audit")
+    key.add_argument(
+        "action", choices=["create", "list", "revoke", "set-scopes", "renew", "set-limits", "audit", "audit-purge"]
+    )
+    key.add_argument("name", nargs="?", help="key name, e.g. macbook-cursor (audit: optional filter)")
     key.add_argument(
         "--scopes",
         help="comma-separated: memory:read, memory:write, memory:delete, models "
         "(create default: memory:read,memory:write)",
     )
+    key.add_argument("--expires-days", type=float, help="create/renew: validity in days (0 = never; create default 90)")
+    key.add_argument("--daily-limit", type=int, help="requests per UTC day (0 = no limit)")
+    key.add_argument("--per-minute", type=int, help="requests per minute (0 = no limit)")
+    key.add_argument("--hours", type=float, default=24, help="audit: look back this many hours (default 24)")
+    key.add_argument("--limit", type=int, default=100, help="audit: rows to show")
+    key.add_argument("--older-than-days", type=float, help="audit-purge: delete rows older than this")
+    key.add_argument("--yes", action="store_true", help="audit-purge: really delete (default is a dry run)")
     key.set_defaults(func=cmd_key)
+
+    memory_cmd = sub.add_parser("memory", help="soft-deleted memory: inspect and purge (run on the gateway)")
+    memory_cmd.add_argument("action", choices=["deleted", "purge"])
+    memory_cmd.add_argument("--session", help="deleted: only this session")
+    memory_cmd.add_argument("--limit", type=int, default=100, help="deleted: rows to show")
+    memory_cmd.add_argument("--older-than-days", type=float, help="purge: delete soft-deleted rows older than this")
+    memory_cmd.add_argument("--yes", action="store_true", help="purge: really delete (default is a dry run)")
+    memory_cmd.set_defaults(func=cmd_memory)
 
     token = sub.add_parser("token", help="store and read API tokens in the macOS Keychain")
     token.add_argument("action", choices=["set", "get", "delete", "list", "env", "install-shell", "login-env", "login-env-remove"])

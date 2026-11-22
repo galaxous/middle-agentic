@@ -45,7 +45,10 @@ CREATE TABLE IF NOT EXISTS nodes (
     role        TEXT NOT NULL,
     content     TEXT NOT NULL,
     metadata    TEXT NOT NULL DEFAULT '{}',
-    created_at  REAL NOT NULL
+    created_at  REAL NOT NULL,
+    deleted_at  REAL,
+    deleted_by  TEXT,
+    delete_reason TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_nodes_session_time ON nodes (session_id, created_at);
 
@@ -77,6 +80,22 @@ CREATE TRIGGER IF NOT EXISTS nodes_fts_update AFTER UPDATE OF content ON nodes B
     INSERT INTO nodes_fts (node_id, content) VALUES (new.id, new.content);
 END;
 """
+
+
+# Columns added after the first release; older databases get them on start-up.
+_NODE_COLUMNS = {"deleted_at": "REAL", "deleted_by": "TEXT", "delete_reason": "TEXT"}
+
+
+def _ensure_columns(connection: sqlite3.Connection) -> None:
+    present = {row[1] for row in connection.execute("PRAGMA table_info(nodes)")}
+    for name, kind in _NODE_COLUMNS.items():
+        if name not in present:
+            connection.execute(f"ALTER TABLE nodes ADD COLUMN {name} {kind}")
+    # Created here, not in SCHEMA: on an old database the column only exists after the ALTER above.
+    connection.execute("CREATE INDEX IF NOT EXISTS idx_nodes_deleted ON nodes (deleted_at)")
+
+
+LIVE = "deleted_at IS NULL"  # every read path filters on this; soft-deleted rows stay for investigation
 
 
 def extract_keywords(text: str, limit: int = 8) -> list[str]:
@@ -153,6 +172,7 @@ class GraphMemory:
             # WAL lets the background writer and request readers work concurrently.
             connection.execute("PRAGMA journal_mode = WAL")
             connection.executescript(SCHEMA)
+            _ensure_columns(connection)
             connection.commit()
             had_fts = connection.execute(
                 "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'nodes_fts'"
@@ -185,7 +205,7 @@ class GraphMemory:
                     f"SELECT n.id, n.role, n.content, n.created_at, "
                     f"bm25(nodes_fts) * (CASE n.role {weights} ELSE 1.0 END) AS score "
                     f"FROM nodes_fts JOIN nodes n ON n.id = nodes_fts.node_id "
-                    f"WHERE nodes_fts MATCH ? AND n.session_id = ? "
+                    f"WHERE nodes_fts MATCH ? AND n.session_id = ? AND n.deleted_at IS NULL "
                     f"ORDER BY score, n.created_at DESC LIMIT ?",
                     (*weight_params, match, session_id, limit),
                 ).fetchall()
@@ -199,7 +219,7 @@ class GraphMemory:
         marks = ",".join("?" for _ in IMPORTANT_ROLES)
         return connection.execute(
             f"SELECT id, role, content, created_at FROM nodes "
-            f"WHERE session_id = ? AND ({like_clause}) "
+            f"WHERE session_id = ? AND deleted_at IS NULL AND ({like_clause}) "
             f"ORDER BY role IN ({marks}) DESC, created_at DESC LIMIT ?",
             (session_id, *[f"%{_escape_like(word)}%" for word in keywords], *IMPORTANT_ROLES, limit),
         ).fetchall()
@@ -210,7 +230,8 @@ class GraphMemory:
         return connection.execute(
             f"SELECT n.id, n.role, n.content, n.created_at FROM edges e "
             f"JOIN nodes n ON n.id = CASE WHEN e.src_id IN ({marks}) THEN e.dst_id ELSE e.src_id END "
-            f"WHERE e.relation = 'responded_by' AND (e.src_id IN ({marks}) OR e.dst_id IN ({marks}))",
+            f"WHERE e.relation = 'responded_by' AND n.deleted_at IS NULL "
+            f"AND (e.src_id IN ({marks}) OR e.dst_id IN ({marks}))",
             (*ids, *ids, *ids),
         ).fetchall()
 
@@ -220,7 +241,7 @@ class GraphMemory:
         with closing(self._connect()) as connection:
             recent = connection.execute(
                 "SELECT id, role, content, created_at FROM nodes "
-                "WHERE session_id = ? ORDER BY created_at DESC LIMIT ?",
+                "WHERE session_id = ? AND deleted_at IS NULL ORDER BY created_at DESC LIMIT ?",
                 (session_id, recent_limit),
             ).fetchall()
             selected: dict[str, sqlite3.Row] = {row["id"]: row for row in recent}
@@ -230,7 +251,7 @@ class GraphMemory:
                 marks = ",".join("?" for _ in IMPORTANT_ROLES)
                 important = connection.execute(
                     f"SELECT id, role, content, created_at FROM nodes "
-                    f"WHERE session_id = ? AND role IN ({marks}) ORDER BY created_at DESC LIMIT ?",
+                    f"WHERE session_id = ? AND deleted_at IS NULL AND role IN ({marks}) ORDER BY created_at DESC LIMIT ?",
                     (session_id, *IMPORTANT_ROLES, important_limit),
                 ).fetchall()
                 selected.update({row["id"]: row for row in important})
@@ -269,7 +290,7 @@ class GraphMemory:
         with closing(self._connect()) as connection:
             nodes = connection.execute(
                 "SELECT id, role, content, metadata, created_at FROM nodes "
-                "WHERE session_id = ? ORDER BY created_at DESC LIMIT ?",
+                "WHERE session_id = ? AND deleted_at IS NULL ORDER BY created_at DESC LIMIT ?",
                 (session_id, limit),
             ).fetchall()
             ids = [row["id"] for row in nodes]
@@ -297,7 +318,7 @@ class GraphMemory:
         with closing(self._connect()) as connection:
             rows = connection.execute(
                 "SELECT session_id, COUNT(*) AS nodes, MAX(created_at) AS last_activity FROM nodes "
-                "GROUP BY session_id ORDER BY last_activity DESC LIMIT ?",
+                "WHERE deleted_at IS NULL GROUP BY session_id ORDER BY last_activity DESC LIMIT ?",
                 (limit,),
             ).fetchall()
         return [dict(row) for row in rows]
@@ -319,7 +340,7 @@ class GraphMemory:
         node_id = uuid.uuid4().hex
         with closing(self._connect()) as connection, connection:
             previous = connection.execute(
-                "SELECT id, role FROM nodes WHERE session_id = ? ORDER BY created_at DESC LIMIT 1",
+                "SELECT id, role FROM nodes WHERE session_id = ? AND deleted_at IS NULL ORDER BY created_at DESC LIMIT 1",
                 (session_id,),
             ).fetchone()
             # Keep strict ordering even when two writes share the same clock tick.
@@ -340,7 +361,7 @@ class GraphMemory:
                 edges.append((link_to, node_id, relation or "related_to", created_at))
             elif role == "assistant":
                 last_user = connection.execute(
-                    "SELECT id FROM nodes WHERE session_id = ? AND role = 'user' AND id != ? "
+                    "SELECT id FROM nodes WHERE session_id = ? AND role = 'user' AND id != ? AND deleted_at IS NULL "
                     "ORDER BY created_at DESC LIMIT 1",
                     (session_id, node_id),
                 ).fetchone()
@@ -374,7 +395,9 @@ class GraphMemory:
         )
         return user_id, assistant_id
 
-    # -- delete ---------------------------------------------------------------------
+    # -- delete (soft) -------------------------------------------------------------
+    # forget marks nodes as deleted (who, when, why). Nothing is removed from the database, so a
+    # later investigation can read them with list_deleted. Every read path filters them out.
     def _forget_sync(
         self,
         session_id: str,
@@ -383,10 +406,12 @@ class GraphMemory:
         role: str | None,
         with_answers: bool,
         dry_run: bool,
+        actor: str | None,
+        reason: str | None,
     ) -> list[dict[str, Any]]:
         if not ids and not match:
             raise ValueError("give node ids or a text to match")
-        clauses, params = ["session_id = ?"], [session_id]
+        clauses, params = ["session_id = ?", LIVE], [session_id]
         if ids:
             clauses.append(f"id IN ({','.join('?' for _ in ids)})")
             params.extend(ids)
@@ -406,9 +431,11 @@ class GraphMemory:
                 neighbours = self._responded_neighbours(connection, list(selected))
                 selected.update({row["id"]: row for row in neighbours})
             if selected and not dry_run:
-                # Edges go with ON DELETE CASCADE, FTS rows with the delete trigger.
                 marks = ",".join("?" for _ in selected)
-                connection.execute(f"DELETE FROM nodes WHERE id IN ({marks})", list(selected))
+                connection.execute(
+                    f"UPDATE nodes SET deleted_at = ?, deleted_by = ?, delete_reason = ? WHERE id IN ({marks})",
+                    [time.time(), actor, reason, *selected],
+                )
 
         rows = sorted(selected.values(), key=lambda row: row["created_at"])
         return [{key: row[key] for key in ("id", "role", "content", "created_at")} for row in rows]
@@ -421,16 +448,51 @@ class GraphMemory:
         role: str | None = None,
         with_answers: bool = True,
         dry_run: bool = False,
+        actor: str | None = None,
+        reason: str | None = None,
     ) -> list[dict[str, Any]]:
-        """Delete nodes by id and/or content substring. A matched question takes its answer with it."""
-        return await asyncio.to_thread(self._forget_sync, session_id, ids, match, role, with_answers, dry_run)
+        """Soft-delete nodes by id and/or content substring. A matched question takes its answer with it."""
+        return await asyncio.to_thread(
+            self._forget_sync, session_id, ids, match, role, with_answers, dry_run, actor, reason
+        )
+
+    def _list_deleted_sync(self, session_id: str | None, limit: int) -> list[dict[str, Any]]:
+        clauses, params = ["deleted_at IS NOT NULL"], []
+        if session_id:
+            clauses.append("session_id = ?")
+            params.append(session_id)
+        with closing(self._connect()) as connection:
+            rows = connection.execute(
+                f"SELECT id, session_id, role, content, created_at, deleted_at, deleted_by, delete_reason "
+                f"FROM nodes WHERE {' AND '.join(clauses)} ORDER BY deleted_at DESC LIMIT ?",
+                (*params, limit),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    async def list_deleted(self, session_id: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
+        """Soft-deleted nodes, newest deletion first. For investigation; not used by any read path."""
+        return await asyncio.to_thread(self._list_deleted_sync, session_id, limit)
+
+    def _purge_sync(self, older_than_days: float) -> int:
+        cutoff = time.time() - older_than_days * 86400
+        with closing(self._connect()) as connection, connection:
+            cursor = connection.execute(
+                "DELETE FROM nodes WHERE deleted_at IS NOT NULL AND deleted_at < ?", (cutoff,)
+            )
+            return cursor.rowcount
+
+    async def purge_deleted(self, older_than_days: float) -> int:
+        """Hard-delete nodes that were soft-deleted more than `older_than_days` ago (retention)."""
+        if older_than_days < 0:
+            raise ValueError("older_than_days must be 0 or more")
+        return await asyncio.to_thread(self._purge_sync, older_than_days)
 
     # -- stats ----------------------------------------------------------------------
     def _stats_sync(self) -> dict[str, int]:
         with closing(self._connect()) as connection:
-            nodes = connection.execute("SELECT COUNT(*) FROM nodes").fetchone()[0]
+            nodes = connection.execute("SELECT COUNT(*) FROM nodes WHERE deleted_at IS NULL").fetchone()[0]
             edges = connection.execute("SELECT COUNT(*) FROM edges").fetchone()[0]
-            sessions = connection.execute("SELECT COUNT(DISTINCT session_id) FROM nodes").fetchone()[0]
+            sessions = connection.execute("SELECT COUNT(DISTINCT session_id) FROM nodes WHERE deleted_at IS NULL").fetchone()[0]
         return {"nodes": nodes, "edges": edges, "sessions": sessions}
 
     async def stats(self) -> dict[str, int]:

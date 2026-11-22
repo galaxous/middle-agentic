@@ -22,6 +22,7 @@ from middle_agentic.providers.chain import ModelRouter
 from middle_agentic.providers.registry import resolve_chain
 from middle_agentic.server import routes_chat, routes_hooks, routes_memory
 from middle_agentic.server.api_keys import ApiKeyStore
+from middle_agentic.server.audit import AuditLog, AuditMiddleware
 from middle_agentic.server.mcp_http import mcp_lifespan, mount_mcp
 from middle_agentic.server.state import GatewayState, get_state
 
@@ -54,7 +55,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         request_timeout=settings.gateway.request_timeout,
         probe_timeout=settings.discovery.probe_timeout,
     )
-    keys = ApiKeyStore(settings.memory.resolved_db_path())
+    audit = AuditLog(settings.memory.resolved_db_path())
+    keys = ApiKeyStore(settings.memory.resolved_db_path(), audit=audit)
     state = GatewayState(settings=settings, memory=memory, router=router, keys=keys)
 
     # Created before the app so the lifespan can start the MCP session manager.
@@ -80,6 +82,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(routes_memory.router)
     app.include_router(routes_hooks.router)
     mcp_holder["app"] = mount_mcp(app, state)
+    app.add_middleware(AuditMiddleware, log=audit)  # added last, so it wraps everything else
 
     @app.get("/health")
     async def health(request: Request) -> dict[str, Any]:
