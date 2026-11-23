@@ -17,6 +17,7 @@ def _make_checkout(repo: Path) -> None:
     connection.execute("CREATE TABLE nodes (id TEXT PRIMARY KEY, content TEXT)")
     connection.executemany("INSERT INTO nodes VALUES (?, ?)", [(str(i), f"memory {i}") for i in range(50)])
     connection.commit()  # stays in the -wal file until checkpoint: the backup must still include it
+    connection.close()   # closing checkpoints the WAL now, so the fingerprint below is stable
     (repo / ".env").write_text(
         "GEMINI_API_KEY=placeholder\nMEMORY_DB_PATH=/old/repo/agent_memory.db\nMAGENT_URL=http://100.68.92.41:8000\n",
         encoding="utf-8",

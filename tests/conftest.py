@@ -80,6 +80,20 @@ def fake_llm(monkeypatch: pytest.MonkeyPatch) -> FakeLLM:
     return fake
 
 
+class _EmptyStore:
+    def get(self, provider):
+        return None
+
+
+@pytest.fixture(autouse=True)
+def no_real_keychain(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Provider keys come from the environment in tests; the machine's Keychain/DPAPI is never read."""
+    from middle_agentic import tokens
+
+    monkeypatch.setattr(tokens, "_secret_store", lambda: _EmptyStore())
+    tokens.clear_secret_cache()
+
+
 @pytest.fixture(autouse=True)
 def isolated_magent_home(tmp_path_factory, monkeypatch: pytest.MonkeyPatch) -> None:
     """Every test gets its own magent home, so no real .env, config or database is read."""

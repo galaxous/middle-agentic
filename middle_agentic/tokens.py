@@ -404,3 +404,36 @@ def remove_login_env(keychain_run: Callable[..., subprocess.CompletedProcess] = 
         plist.unlink()
         return [f"removed {plist}"]
     return ["nothing to remove"]
+
+
+# Env var name -> provider, e.g. GEMINI_API_KEY -> gemini. Used so the gateway can find provider keys in the store.
+ENV_TO_PROVIDER: dict[str, str] = {variable: provider for provider, variable in PROVIDERS.items()}
+_secret_cache: dict[str, str] = {}
+
+
+def _secret_store():
+    return default_store()
+
+
+def provider_secret(env_name: str) -> str:
+    """Value for a provider env var: the environment first, then the OS store item for that provider.
+
+    Read at most once per process and per variable, so the gateway does not call `security` on every request.
+    Nothing is written anywhere; a missing key simply returns an empty string.
+    """
+    if env_name in _secret_cache:
+        return _secret_cache[env_name]
+    value = os.getenv(env_name, "").strip()
+    provider = ENV_TO_PROVIDER.get(env_name)
+    if not value and provider:
+        try:
+            value = (_secret_store().get(provider) or "").strip()
+        except Exception:  # noqa: BLE001 - no store on this platform, or locked: treat as missing
+            value = ""
+    _secret_cache[env_name] = value
+    return value
+
+
+def clear_secret_cache() -> None:
+    _secret_cache.clear()
+

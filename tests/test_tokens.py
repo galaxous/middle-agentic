@@ -352,3 +352,57 @@ def test_linux_falls_back_to_file_when_secret_tool_store_fails(monkeypatch, tmp_
 def test_default_store_on_linux_is_the_linux_store(monkeypatch) -> None:
     monkeypatch.setattr(tokens.sys, "platform", "linux")
     assert isinstance(tokens.default_store(), tokens.LinuxStore)
+
+
+# ---- provider secrets for the gateway ---------------------------------------
+
+class CountingStore:
+    def __init__(self, values: dict[str, str]) -> None:
+        self.values = values
+        self.reads = 0
+
+    def get(self, provider: str):
+        self.reads += 1
+        return self.values.get(provider)
+
+
+def test_provider_secret_prefers_environment_then_store(monkeypatch) -> None:
+    store = CountingStore({"gemini": "from-store"})
+    monkeypatch.setattr(tokens, "_secret_store", lambda: store)
+    tokens.clear_secret_cache()
+    monkeypatch.setenv("GEMINI_API_KEY", "from-env")
+    assert tokens.provider_secret("GEMINI_API_KEY") == "from-env"
+    assert store.reads == 0  # environment wins, the store is not asked
+
+    monkeypatch.delenv("GEMINI_API_KEY")
+    tokens.clear_secret_cache()
+    assert tokens.provider_secret("GEMINI_API_KEY") == "from-store"
+
+
+def test_provider_secret_is_read_once_per_process(monkeypatch) -> None:
+    store = CountingStore({"openai": "k"})
+    monkeypatch.setattr(tokens, "_secret_store", lambda: store)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    tokens.clear_secret_cache()
+    for _ in range(5):
+        assert tokens.provider_secret("OPENAI_API_KEY") == "k"
+    assert store.reads == 1
+
+
+def test_unknown_variable_never_reaches_the_store(monkeypatch) -> None:
+    store = CountingStore({})
+    monkeypatch.setattr(tokens, "_secret_store", lambda: store)
+    tokens.clear_secret_cache()
+    assert tokens.provider_secret("SOME_OTHER_KEY") == ""
+    assert store.reads == 0
+
+
+def test_locked_or_missing_store_means_missing_key(monkeypatch) -> None:
+    class Broken:
+        def get(self, provider):
+            raise RuntimeError("keychain locked")
+
+    monkeypatch.setattr(tokens, "_secret_store", lambda: Broken())
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    tokens.clear_secret_cache()
+    assert tokens.provider_secret("ANTHROPIC_API_KEY") == ""

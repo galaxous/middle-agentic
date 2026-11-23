@@ -26,3 +26,4 @@ Her özellik veya önemli değişiklik, **commit atılmadan önce** bu klasöre 
 | [2026-11-23](2026-11-23-client-installer.md) | İstemci kurulum sihirbazı, Linux anahtar deposu, GitHub Release betikleri (v0.3.0) | `main'de` (feab0ce) |
 | [2026-11-23](2026-11-23-gateway-setup.md) | Gateway'i repodan kurtarma (`magent gateway-setup`), v0.4.0 | `main'de` (643cddc) |
 | [2026-11-23](2026-11-23-readme-install-flow.md) | README kurulum akışı: repo olmadan ağ, SSH, magent | `commit bekliyor` |
+| [2026-11-23](2026-11-23-gateway-provider-keys.md) | Gateway sağlayıcı anahtarları: düz metin .env yerine Keychain | `commit bekliyor` |

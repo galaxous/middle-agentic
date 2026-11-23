@@ -13,6 +13,7 @@ from typing import Any
 import httpx
 
 from middle_agentic.config import TierConfig
+from middle_agentic.tokens import provider_secret
 
 
 @dataclass(frozen=True)
@@ -67,7 +68,7 @@ class ResolvedTier:
         if self.api_base:
             kwargs["api_base"] = self.api_base
         if self.api_key_env:
-            kwargs["api_key"] = os.getenv(self.api_key_env, "")
+            kwargs["api_key"] = provider_secret(self.api_key_env)
         elif self.local:
             kwargs["api_key"] = LOCAL_API_KEY
         if self.timeout:
@@ -76,7 +77,7 @@ class ResolvedTier:
 
     async def availability(self, probe_timeout: float = 1.5) -> tuple[bool, str]:
         if not self.local:
-            if self.api_key_env and not os.getenv(self.api_key_env):
+            if self.api_key_env and not provider_secret(self.api_key_env):
                 return False, f"{self.api_key_env} is not set"
             return True, "ready"
 
