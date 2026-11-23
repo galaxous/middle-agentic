@@ -354,6 +354,27 @@ def cmd_client_setup(args: argparse.Namespace) -> int:
         )
 
 
+def cmd_gateway_setup(args: argparse.Namespace) -> int:
+    """Move this gateway off a source checkout onto the installed package and magent home, then start it."""
+    from middle_agentic import gateway_setup, service
+
+    repo = Path(args.from_repo) if args.from_repo else None
+    try:
+        for line in gateway_setup.migrate(
+            repo, force=args.force, stop_service=lambda: "old service stopped: " + service.uninstall().strip().splitlines()[0]
+        ):
+            print(line)
+        print(service.install().strip())
+        settings = load_settings()
+        print(gateway_setup.wait_for_health(settings.gateway.port))
+    except (gateway_setup.GatewaySetupError, service.ServiceError) as exc:
+        return _fail(str(exc))
+    print(f"gateway running from {sys.executable}")
+    print(f"magent home: {magent_home()}")
+    print("next time after a new release: pipx install --force <wheel>  then  magent service install")
+    return 0
+
+
 def cmd_token(args: argparse.Namespace) -> int:
     from middle_agentic import tokens
 
@@ -646,6 +667,11 @@ def build_parser() -> argparse.ArgumentParser:
     rules_parser.set_defaults(func=cmd_rules)
 
     from middle_agentic.tokens import PROVIDERS
+
+    gateway_setup_cmd = sub.add_parser("gateway-setup", help="run this gateway from the installed package and magent home (one-time move from a checkout)")
+    gateway_setup_cmd.add_argument("--from-repo", help="source checkout to copy the database, .env and config from (read only)")
+    gateway_setup_cmd.add_argument("--force", action="store_true", help="replace files that already exist in the magent home")
+    gateway_setup_cmd.set_defaults(func=cmd_gateway_setup)
 
     client_setup = sub.add_parser("client-setup", help="connect this machine to a gateway: asks for address and key, verifies, then installs")
     client_setup.add_argument("--url", help="gateway address, e.g. 100.68.92.41 or http://host:8000")

@@ -23,4 +23,5 @@ Her özellik veya önemli değişiklik, **commit atılmadan önce** bu klasöre 
 | [2026-11-22](2026-11-22-key-scopes.md) | Anahtar kapsamları (okuma, yazma, model, silme) | `commit bekliyor` |
 | [2026-11-23](2026-11-23-key-lifecycle-and-soft-delete.md) | Anahtar süresi, kotalar, istek kaydı, soft delete | `commit bekliyor` |
 | [2026-11-23](2026-11-23-standalone-install.md) | Repo dışından çalışan kurulum (pipx, ev dizini, paketli hook) | `commit bekliyor` |
-| [2026-11-23](2026-11-23-client-installer.md) | İstemci kurulum sihirbazı, Linux anahtar deposu, GitHub Release betikleri (v0.3.0) | `commit bekliyor` |
+| [2026-11-23](2026-11-23-client-installer.md) | İstemci kurulum sihirbazı, Linux anahtar deposu, GitHub Release betikleri (v0.3.0) | `main'de` (feab0ce) |
+| [2026-11-23](2026-11-23-gateway-setup.md) | Gateway'i repodan kurtarma (`magent gateway-setup`) | `commit bekliyor` |
