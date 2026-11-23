@@ -1,8 +1,8 @@
-# 2026-11-23 · Gateway: kullanım kaydı, günlük bütçe, admin uçları (v0.5.0) · commit bekliyor
+# 2026-11-23 · Gateway: kullanım kaydı, günlük bütçe, admin uçları (v0.5.0) · main'de (0337420)
 
 ## Durum
 
-`commit bekliyor`. Gateway tarafı yazıldı ve testlerle doğrulandı (203 geçiyor). Client tarafı için ayrı changelog var: [2026-11-23-client-usage-budget.md](2026-11-23-client-usage-budget.md). Yayın (v0.5.0) ve gateway makinesinde kurulum henüz yapılmadı.
+`main'de` (0337420), v0.5.0 yayınlandı. Gateway tarafı yazıldı ve testlerle doğrulandı (203 geçiyor). Client tarafı için ayrı changelog var: [2026-11-23-client-usage-budget.md](2026-11-23-client-usage-budget.md). Yayın (v0.5.0) ve gateway makinesinde kurulum henüz yapılmadı.
 
 ## Sorun
 

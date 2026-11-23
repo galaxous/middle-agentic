@@ -1,8 +1,8 @@
-# 2026-11-23 · İstemci tarafı: iş etiketi, istek bütçesi, kullanım komutları · commit bekliyor
+# 2026-11-23 · İstemci tarafı: iş etiketi, istek bütçesi, kullanım komutları · main'de (0337420)
 
 ## Durum
 
-`commit bekliyor`. Yalnızca istemci (SDK ve `magent` CLI). Gateway tarafı (kullanım kaydı, bütçe, `/admin` uçları) henüz yazılmadı; bu komutlar gateway v0.5.0 yayınlanana kadar 404/403 dönecek. Yayın ve gateway testi manuel yapılacak.
+`main'de` (0337420), v0.5.0 yayınlandı. Yalnızca istemci (SDK ve `magent` CLI). Gateway tarafı (kullanım kaydı, bütçe, `/admin` uçları) henüz yazılmadı; bu komutlar gateway v0.5.0 yayınlanana kadar 404/403 dönecek. Yayın ve gateway testi manuel yapılacak.
 
 ## Sorun
 
