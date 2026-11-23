@@ -35,7 +35,7 @@ def captured(monkeypatch: pytest.MonkeyPatch) -> list[httpx.Request]:
         if request.url.path == "/v1/chat/completions":
             body = {"choices": [{"message": {"content": "ok"}}]}
             return httpx.Response(200, json=body, headers={"x-gateway-tier-name": "luna"})
-        return httpx.Response(200, json=replies[request.url.path])
+        return httpx.Response(200, json=replies.get(request.url.path, {"ok": True}))
 
     def make_client(**kwargs):
         return _REAL_HTTP_CLIENT(transport=httpx.MockTransport(handler), **{k: v for k, v in kwargs.items() if k != "transport"})
@@ -133,3 +133,38 @@ def test_cli_admin_forbidden_is_reported_not_raised(monkeypatch: pytest.MonkeyPa
     )
     assert main(["budget", "--node", URL]) != 0
     assert "gateway returned 403" in capsys.readouterr().err
+
+
+def test_live_changes_send_only_the_given_fields(captured: list[httpx.Request]) -> None:
+    with MiddleAgentClient(base_url=URL, api_key="k") as client:
+        client.patch_model("primary", enabled=False, model=None, price_in=0.5)
+        client.set_model_order(["paid", "primary"])
+        client.set_budget(daily_usd=0.5)
+        client.clear_budget()
+    patch, order, budget, clear = captured
+    assert patch.method == "PATCH" and patch.url.path == "/admin/models/primary"
+    assert json.loads(patch.content) == {"enabled": False, "price_in": 0.5}
+    assert json.loads(order.content) == {"names": ["paid", "primary"]}
+    assert budget.method == "PUT" and json.loads(budget.content) == {"daily_usd": 0.5}
+    assert clear.method == "DELETE" and clear.url.path == "/admin/budget"
+
+
+def test_cli_models_disable_and_reorder(captured: list[httpx.Request], capsys: pytest.CaptureFixture[str]) -> None:
+    assert main(["models", "disable", "luna", "--node", URL]) == 0
+    assert json.loads(captured[-1].content) == {"enabled": False}
+    assert captured[-1].method == "PATCH" and captured[-1].url.path == "/admin/models/luna"
+
+    assert main(["models", "reorder", "local", "luna", "--node", URL]) == 0
+    assert json.loads(captured[-1].content) == {"names": ["local", "luna"]}
+
+
+def test_cli_models_set_requires_a_change(captured: list[httpx.Request]) -> None:
+    assert main(["models", "set", "luna", "--node", URL]) != 0
+    assert all(request.method != "PATCH" for request in captured)
+
+
+def test_cli_budget_set_and_reset(captured: list[httpx.Request], capsys: pytest.CaptureFixture[str]) -> None:
+    assert main(["budget", "set", "--daily", "0.25", "--on-exceed", "block", "--node", URL]) == 0
+    assert json.loads(captured[-1].content) == {"daily_usd": 0.25, "on_exceed": "block"}
+    assert main(["budget", "reset", "--node", URL]) == 0
+    assert captured[-1].method == "DELETE"

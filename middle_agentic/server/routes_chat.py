@@ -133,7 +133,7 @@ def _job_label(value: str | None) -> str:
     return label[:64] if label else "-"
 
 
-def _budget_exceeded_response(state: GatewayState, spent: float, budget: float | None) -> JSONResponse:
+def _budget_exceeded_response(state: GatewayState, spent: float, budget: float | None, on_exceed: str) -> JSONResponse:
     return JSONResponse(
         status_code=429,
         headers={"X-Gateway-Budget": "blocked", "Retry-After": "3600"},
@@ -143,7 +143,7 @@ def _budget_exceeded_response(state: GatewayState, spent: float, budget: float |
                 "type": "budget_exceeded",
                 "spent_usd": round(spent, 6),
                 "budget_usd": budget,
-                "on_exceed": state.settings.budget.on_exceed,
+                "on_exceed": on_exceed,
             }
         },
     )
@@ -190,11 +190,12 @@ async def chat_completions(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     key_name = current_key() or "-"
-    budget = effective_budget(state.settings.budget.daily_usd, request_budget)
+    daily_usd, on_exceed = state.budget_policy()
+    budget = effective_budget(daily_usd, request_budget)
     spent = state.usage.spent_on(UsageLedger.today(), key_name)
-    decision = decide(candidates, spent_usd=spent, budget_usd=budget, on_exceed=state.settings.budget.on_exceed)
+    decision = decide(candidates, spent_usd=spent, budget_usd=budget, on_exceed=on_exceed)
     if decision.status == "blocked":
-        return _budget_exceeded_response(state, spent, budget)
+        return _budget_exceeded_response(state, spent, budget, on_exceed)
     ctx = {"key": key_name, "job": _job_label(x_job), "stream": body.stream}
 
     if use_memory and user_text:

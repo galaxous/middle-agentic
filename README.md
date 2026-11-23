@@ -273,6 +273,17 @@ chain:
 - İstemci `--budget` (ya da `X-Budget-USD` başlığı) ile tek bir isteğin sınırını düşürebilir; yükseltemez.
 - Yanıt başlığı `X-Gateway-Budget` (`ok`, `downgraded`, `blocked`) hangi modun uygulandığını gösterir.
 
+Bütçe ve katman ayarları çalışırken değiştirilebilir: `magent budget set`, `magent models disable|set|reorder` ya da `/admin/*` uçları. Değişiklik bir sonraki istekte etkili olur; gateway yeniden başlatılmaz. `config.yaml` hiç yeniden yazılmaz; değişiklikler gateway'in veritabanında tutulur ve `reset` ile silinir.
+
+### Eşzamanlılık
+
+Her katmanın aynı anda çalışan istek sınırı (`max_concurrency`) vardır. Yerel katmanlarda varsayılan 1'dir, çünkü tek bir model bir makinede bir istekle daha verimli çalışır. Bulut katmanlarında sınır yoktur. Sınır doluysa istek `queue_wait` saniye (varsayılan 30) bekler; yer açılmazsa zincir bir sonraki katmana geçer ve atlanan katman `saturated` olarak işaretlenir. Akış (stream) isteği, akış bitene kadar yerini tutar.
+
+```bash
+magent models set local --concurrency 2 --queue-wait 5
+magent models set luna --concurrency 0     # 0 = sınır yok
+```
+
 Sınırlar: bütçe, istek bittikten sonra kaydedilen maliyete göre denetlenir; bu yüzden bir istek kalan bütçeden pahalıysa yine tamamlanabilir. Fiyatı bilinmeyen ücretli modellerin maliyeti 0 kaydedilir (`cost_src: unknown`); bunları `price_in` / `price_out` ile tanımlayın. Ücretsiz katmanlar da LiteLLM'in liste fiyatıyla sayılır.
 
 ## İstemci araçları
@@ -291,7 +302,13 @@ magent health --node acer
 magent ask "..." --job daily-digest --budget 0.05   # iş etiketi ve bu istek için bütçe sınırı
 magent usage [--by tier|key|job|day] [--days N] [--json]   # harcama (admin anahtarı gerekir)
 magent budget [--json]                              # bugünkü harcama ve günlük sınır (admin anahtarı gerekir)
-magent models [--json]                              # katmanlar, fiyatlar, durum (admin anahtarı gerekir)
+magent budget set --daily 0.5 [--on-exceed block]   # sınırı yeniden başlatmadan değiştir
+magent budget reset                                 # config.yaml'daki değere dön
+magent models [--json]                              # sıra, durum, fiyat, çalışan/limit (admin anahtarı gerekir)
+magent models disable|enable <katman>               # katmanı zincirden çıkar / geri koy
+magent models set <katman> [--model M] [--timeout S] [--price-in X] [--price-out Y] [--concurrency N] [--queue-wait S]
+magent models reorder <katman1> <katman2> ...       # zincir sırasını değiştir (listelenmeyenler sonda kalır)
+magent models reset [<katman>...] [--all]           # config.yaml'daki haline dön
 magent llm pull qwen2.5:7b | list | status
 magent serve                                   # gateway'i ön planda çalıştır
 magent service install | uninstall | status
@@ -413,7 +430,14 @@ Hook scripti (`integrations/hooks/magent_hook.py`) yalnızca standart kütüphan
 | `POST /v1/hooks/{cursor\|claude}/{event}` | Aracın ham hook payload'unu alır, aracın beklediği formatta cevap döner |
 | `GET /admin/usage` | Harcama ve istek sayısı. `by=tier\|key\|job\|day`, `days=N`. Yalnız `admin` kapsamı. |
 | `GET /admin/budget` | Bugünkü harcama, günlük sınır ve politika. Yalnız `admin` kapsamı. |
-| `GET /admin/models` | Katmanlar, fiyatlar ve durum. Yalnız `admin` kapsamı. |
+| `GET /admin/models` | Katmanlar, sıra, fiyatlar, çalışan istek sayısı ve durum. Yalnız `admin` kapsamı. |
+| `PATCH /admin/models/{ad}` | Katmanı değiştir: `enabled`, `model`, `timeout`, `price_in`, `price_out`, `max_concurrency`, `queue_wait`. Yalnız `admin`. |
+| `DELETE /admin/models/{ad}` | Katmanın değişikliklerini sil (config.yaml'a dön). Yalnız `admin`. |
+| `PUT /admin/models/order` | `{"names": [...]}` ile zincir sırasını ayarla. Yalnız `admin`. |
+| `DELETE /admin/models/order` | Sırayı sıfırla. Yalnız `admin`. |
+| `DELETE /admin/overrides` | Tüm katman değişikliklerini ve sırayı sıfırla (bütçeye dokunmaz). Yalnız `admin`. |
+| `PUT /admin/budget` | `{"daily_usd": X, "on_exceed": "block"}` ile günlük sınırı değiştir. Yalnız `admin`. |
+| `DELETE /admin/budget` | Bütçe değişikliğini sil (config.yaml'a dön). Yalnız `admin`. |
 
 Chat yanıt header'ları:
 

@@ -13,6 +13,7 @@ from middle_agentic.hooks import HookDeps
 from middle_agentic.memory.graph import GraphMemory
 from middle_agentic.server.api_keys import ApiKeyStore
 from middle_agentic.providers.chain import ModelRouter
+from middle_agentic.server.overrides import OverrideStore
 from middle_agentic.server.usage import UsageLedger
 
 logger = logging.getLogger("middle_agentic.server")
@@ -25,7 +26,15 @@ class GatewayState:
     router: ModelRouter
     keys: ApiKeyStore
     usage: UsageLedger
+    overrides: OverrideStore
     _tasks: set[asyncio.Task[Any]] = field(default_factory=set)
+
+    def budget_policy(self) -> tuple[float, str]:
+        """Daily cap and on_exceed mode: runtime overrides first, then config.yaml."""
+        runtime = self.overrides.budget()
+        daily = float(runtime.get("daily_usd", self.settings.budget.daily_usd))
+        on_exceed = str(runtime.get("on_exceed", self.settings.budget.on_exceed))
+        return daily, on_exceed
 
     @property
     def memory_enabled(self) -> bool:

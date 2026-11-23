@@ -64,6 +64,8 @@ class ResolvedTier:
     _health_cache: tuple[float, bool, str] | None = field(default=None, repr=False)
     price_in: float | None = None
     price_out: float | None = None
+    max_concurrency: int | None = None
+    queue_wait: float = 30.0
 
     def call_kwargs(self) -> dict[str, Any]:
         kwargs: dict[str, Any] = {"model": self.litellm_model}
@@ -117,6 +119,8 @@ class ResolvedTier:
             "local": self.local,
             "price_in": self.price_in,
             "price_out": self.price_out,
+            "max_concurrency": self.max_concurrency,
+            "queue_wait": self.queue_wait,
         }
 
 
@@ -142,6 +146,9 @@ def resolve_tier(config: TierConfig) -> ResolvedTier:
         health_url=health_url,
         price_in=config.price_in,
         price_out=config.price_out,
+        # One model per local machine at a time by default; cloud tiers have no local queue.
+        max_concurrency=config.max_concurrency if config.max_concurrency is not None else (1 if spec.local else None),
+        queue_wait=config.queue_wait,
     )
 
 

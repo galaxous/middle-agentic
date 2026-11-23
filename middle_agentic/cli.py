@@ -563,14 +563,23 @@ def cmd_usage(args: argparse.Namespace) -> int:
 def cmd_budget(args: argparse.Namespace) -> int:
     def run() -> int:
         with _client(args) as client:
-            data = client.budget()
+            if args.action == "set":
+                if args.daily is None and args.on_exceed is None:
+                    return _fail("give --daily USD and/or --on-exceed downgrade|block")
+                data = client.set_budget(daily_usd=args.daily, on_exceed=args.on_exceed)
+            elif args.action == "reset":
+                data = client.clear_budget()
+            else:
+                data = client.budget()
         if args.json:
             _print_json(data)
             return 0
         spent = float(data.get("spent_usd", 0.0))
         limit = float(data.get("daily_usd", 0.0))
         policy = data.get("on_exceed", "downgrade")
-        print(f"today: ${spent:.4f} of ${limit:.2f} (on exceed: {policy})")
+        source = data.get("source", "config")
+        suffix = "" if args.action == "show" else f" [{source}]"
+        print(f"today: ${spent:.4f} of ${limit:.2f} (on exceed: {policy}){suffix}")
         return 0
 
     return _run_client_command(run)
@@ -579,16 +588,54 @@ def cmd_budget(args: argparse.Namespace) -> int:
 def cmd_models(args: argparse.Namespace) -> int:
     def run() -> int:
         with _client(args) as client:
+            action, names = args.action, args.names
+            if action in ("enable", "disable", "set"):
+                if len(names) != 1:
+                    return _fail(f"models {action} takes exactly one tier name")
+                changes = {
+                    "enabled": {"enable": True, "disable": False}.get(action),
+                    "model": args.model,
+                    "timeout": args.timeout,
+                    "price_in": args.price_in,
+                    "price_out": args.price_out,
+                    "max_concurrency": args.concurrency,
+                    "queue_wait": args.queue_wait,
+                }
+                if all(value is None for value in changes.values()):
+                    return _fail("nothing to change; give --model, --timeout, --price-in, --price-out, --concurrency or --queue-wait")
+                result = client.patch_model(names[0], **changes)
+                _print_json(result) if args.json else print(f"updated {names[0]}: {result.get('override')}")
+                return 0
+            if action == "reorder":
+                if not names:
+                    return _fail("models reorder takes the tier names in the wanted order")
+                result = client.set_model_order(names)
+                _print_json(result) if args.json else print(f"order: {', '.join(names)}")
+                return 0
+            if action == "reset":
+                if args.all:
+                    result = client.clear_overrides()
+                elif names:
+                    result = {name: client.reset_model(name) for name in names}
+                else:
+                    return _fail("models reset needs tier names or --all")
+                _print_json(result) if args.json else print("reset to config.yaml")
+                return 0
+
             rows = client.admin_models()
         if args.json:
             _print_json(rows)
             return 0
-        print(f"{'TIER':<18} {'ENABLED':<8} {'TIER TYPE':<10} {'MODEL':<28} {'PRICE in/out per 1M':<20} OVERRIDDEN")
+        print(f"{'POS':<4} {'TIER':<18} {'ENABLED':<8} {'TYPE':<8} {'MODEL':<26} {'PRICE in/out':<14} {'RUNNING':<8} {'STATE':<22} OVERRIDDEN")
         for row in rows:
-            price = f"{row.get('price_in', '-')}/{row.get('price_out', '-')}"
+            price = f"{row.get('price_in') or '-'}/{row.get('price_out') or '-'}"
+            limit = row.get("max_concurrency")
+            running = f"{row.get('in_flight', 0)}/{limit if limit else 'inf'}"
+            state = "ok" if row.get("available") else (row.get("reason") or "-")
+            position = "-" if row.get("position") is None else str(row["position"])
             print(
-                f"{row.get('name', '-'):<18} {'yes' if row.get('enabled', True) else 'no':<8} "
-                f"{row.get('tier', '-'):<10} {row.get('model', '-'):<28} {price:<20} "
+                f"{position:<4} {row.get('name', '-'):<18} {'yes' if row.get('enabled', True) else 'no':<8} "
+                f"{row.get('tier', '-'):<8} {row.get('model', '-'):<26} {price:<14} {running:<8} {state[:22]:<22} "
                 f"{'yes' if row.get('overridden') else 'no'}"
             )
         return 0
@@ -699,13 +746,28 @@ def build_parser() -> argparse.ArgumentParser:
     usage.add_argument("--json", action="store_true")
     usage.set_defaults(func=cmd_usage)
 
-    budget = sub.add_parser("budget", help="today's spend against the daily budget (needs an admin key)")
+    budget = sub.add_parser("budget", help="today's spend and the daily cap; change the cap live (needs an admin key)")
     add_target(budget)
+    budget.add_argument("action", nargs="?", default="show", choices=["show", "set", "reset"])
+    budget.add_argument("--daily", type=float, metavar="USD", help="set: daily cap in USD (0 = no cap)")
+    budget.add_argument("--on-exceed", choices=["downgrade", "block"], help="set: what happens at the cap")
     budget.add_argument("--json", action="store_true")
     budget.set_defaults(func=cmd_budget)
 
-    models = sub.add_parser("models", help="list the gateway's model tiers with prices and overrides (needs an admin key)")
+    models = sub.add_parser("models", help="model tiers: list, enable/disable, change, reorder, reset (needs an admin key)")
     add_target(models)
+    models.add_argument(
+        "action", nargs="?", default="list",
+        choices=["list", "enable", "disable", "set", "reorder", "reset"],
+    )
+    models.add_argument("names", nargs="*", help="tier name(s); reorder takes them in the new order")
+    models.add_argument("--model", help="set: provider model id for this tier")
+    models.add_argument("--timeout", type=float, help="set: seconds per request")
+    models.add_argument("--price-in", type=float, help="set: USD per 1M input tokens")
+    models.add_argument("--price-out", type=float, help="set: USD per 1M output tokens")
+    models.add_argument("--concurrency", type=int, help="set: parallel requests (0 = no limit)")
+    models.add_argument("--queue-wait", type=float, help="set: seconds to wait for a slot before moving on")
+    models.add_argument("--all", action="store_true", help="reset: every override and the order")
     models.add_argument("--json", action="store_true")
     models.set_defaults(func=cmd_models)
 

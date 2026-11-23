@@ -105,6 +105,10 @@ class TierConfig(BaseModel):
     # USD per 1M tokens. When set they override LiteLLM's price table, which is how brand-new models get priced.
     price_in: float | None = Field(default=None, ge=0)
     price_out: float | None = Field(default=None, ge=0)
+    # Requests in flight at once for this tier (None = local tiers 1, cloud tiers unlimited).
+    max_concurrency: int | None = Field(default=None, ge=0)
+    # Seconds a request waits for a free slot before the chain moves on to the next tier.
+    queue_wait: float = Field(default=30.0, ge=0)
 
 
 class BudgetConfig(BaseModel):

@@ -119,6 +119,32 @@ class MiddleAgentClient:
     def budget(self) -> dict[str, Any]:
         return self._request("GET", "/admin/budget").json()
 
+    # -- admin: live changes (take effect on the next request) ---------------------------
+    @staticmethod
+    def _given(**fields: Any) -> dict[str, Any]:
+        return {key: value for key, value in fields.items() if value is not None}
+
+    def patch_model(self, name: str, **changes: Any) -> dict[str, Any]:
+        return self._request("PATCH", f"/admin/models/{name}", json=self._given(**changes)).json()
+
+    def reset_model(self, name: str) -> dict[str, Any]:
+        return self._request("DELETE", f"/admin/models/{name}").json()
+
+    def set_model_order(self, names: list[str]) -> dict[str, Any]:
+        return self._request("PUT", "/admin/models/order", json={"names": names}).json()
+
+    def clear_model_order(self) -> dict[str, Any]:
+        return self._request("DELETE", "/admin/models/order").json()
+
+    def clear_overrides(self) -> dict[str, Any]:
+        return self._request("DELETE", "/admin/overrides").json()
+
+    def set_budget(self, daily_usd: float | None = None, on_exceed: str | None = None) -> dict[str, Any]:
+        return self._request("PUT", "/admin/budget", json=self._given(daily_usd=daily_usd, on_exceed=on_exceed)).json()
+
+    def clear_budget(self) -> dict[str, Any]:
+        return self._request("DELETE", "/admin/budget").json()
+
     @staticmethod
     def discover(settings: Settings | None = None, only_online: bool = True) -> list[Node]:
         return discover_nodes(settings or load_settings(), only_online=only_online)

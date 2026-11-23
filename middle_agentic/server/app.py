@@ -19,12 +19,12 @@ from middle_agentic import __version__
 from middle_agentic.config import Settings, load_settings
 from middle_agentic.memory.graph import GraphMemory
 from middle_agentic.providers.chain import ModelRouter
-from middle_agentic.providers.registry import resolve_chain
 from middle_agentic.server import routes_admin, routes_chat, routes_hooks, routes_memory
 from middle_agentic.server.api_keys import ApiKeyStore
 from middle_agentic.server.audit import AuditLog, AuditMiddleware
 from middle_agentic.server.mcp_http import mcp_lifespan, mount_mcp
 from middle_agentic.server.state import GatewayState, get_state
+from middle_agentic.server.overrides import OverrideStore
 from middle_agentic.server.usage import UsageLedger
 
 logger = logging.getLogger("middle_agentic.server")
@@ -52,15 +52,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         important_limit=settings.memory.important_limit,
     )
     usage = UsageLedger(settings.memory.resolved_db_path())
+    overrides = OverrideStore(settings.memory.resolved_db_path())
     router = ModelRouter(
-        resolve_chain(settings.chain),
         request_timeout=settings.gateway.request_timeout,
         probe_timeout=settings.discovery.probe_timeout,
         ledger=usage,
+        configs=settings.chain,
+        overrides=overrides,
     )
     audit = AuditLog(settings.memory.resolved_db_path())
     keys = ApiKeyStore(settings.memory.resolved_db_path(), audit=audit)
-    state = GatewayState(settings=settings, memory=memory, router=router, keys=keys, usage=usage)
+    state = GatewayState(settings=settings, memory=memory, router=router, keys=keys, usage=usage, overrides=overrides)
 
     # Created before the app so the lifespan can start the MCP session manager.
     mcp_holder: dict[str, Any] = {}

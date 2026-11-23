@@ -6,6 +6,13 @@ Requested model selection (the OpenAI ``model`` field):
     a tier label  (free|local|paid)  -> every tier with that label, in order
 Anything else is rejected, so clients cannot make the gateway call arbitrary paid models.
 
+Live changes: when the router is given the base config and an override store, the effective chain
+(enabled tiers, order, model, timeout, prices, limits) is rebuilt whenever the store changes. Nothing
+needs a restart.
+
+Concurrency: each tier has a limiter (see providers/limits.py). A request waits up to the tier's
+queue_wait for a slot, then the chain moves on. Streams keep their slot until the stream finishes.
+
 Every attempt that reaches a provider is written to the usage ledger when one is attached
 (see middle_agentic.server.usage). Callers pass ``ctx`` (key name, job label, stream flag) and may
 pass ``tiers`` to run only a subset, which is how the daily budget downgrades a request.
@@ -14,14 +21,19 @@ from __future__ import annotations
 
 import logging
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import litellm
 
-from middle_agentic.providers.registry import ResolvedTier
+from middle_agentic.config import TierConfig
+from middle_agentic.providers.limits import ConcurrencyLimiter
+from middle_agentic.providers.registry import ResolvedTier, resolve_chain
 from middle_agentic.server.usage import UsageLedger, price_call, tokens_from_usage
+
+if TYPE_CHECKING:  # pragma: no cover
+    from middle_agentic.server.overrides import OverrideStore
 
 logger = logging.getLogger("middle_agentic.chain")
 
@@ -69,6 +81,7 @@ class StreamResult:
     messages: list[dict[str, Any]] = field(default_factory=list)
     ctx: dict[str, Any] | None = None
     started: float = 0.0
+    release: Callable[[], None] | None = None
 
 
 def _estimate_prompt_tokens(tier: ResolvedTier, messages: list[dict[str, Any]]) -> int:
@@ -81,35 +94,79 @@ def _estimate_prompt_tokens(tier: ResolvedTier, messages: list[dict[str, Any]]) 
 class ModelRouter:
     def __init__(
         self,
-        tiers: list[ResolvedTier],
+        tiers: list[ResolvedTier] | None = None,
         request_timeout: float = 60.0,
         probe_timeout: float = 1.5,
         ledger: UsageLedger | None = None,
+        *,
+        configs: list[TierConfig] | None = None,
+        overrides: "OverrideStore | None" = None,
     ) -> None:
-        self.tiers = tiers
         self.request_timeout = request_timeout
         self.probe_timeout = probe_timeout
         self.ledger = ledger
+        self._configs = configs
+        self._overrides = overrides
+        self._static_tiers = list(tiers or [])
+        self._effective: list[ResolvedTier] | None = None
+        self._effective_version: Any = None
+        self._limiters: dict[str, ConcurrencyLimiter] = {}
+
+    # -- chain ---------------------------------------------------------------------------
+    @property
+    def base_configs(self) -> list[TierConfig]:
+        return list(self._configs or [])
+
+    def current_tiers(self) -> list[ResolvedTier]:
+        """The chain as it stands now: base config plus runtime overrides, rebuilt only when they change."""
+        if self._configs is None:
+            return self._static_tiers
+        version = self._overrides.version() if self._overrides is not None else None
+        if self._effective is None or version != self._effective_version:
+            from middle_agentic.server.overrides import effective_configs
+
+            overrides = self._overrides.tier_overrides() if self._overrides is not None else {}
+            order = self._overrides.order() if self._overrides is not None else []
+            self._effective = resolve_chain(effective_configs(self._configs, overrides, order))
+            self._effective_version = version
+        return self._effective
+
+    @property
+    def tiers(self) -> list[ResolvedTier]:
+        return self.current_tiers()
 
     def select(self, requested: str | None) -> list[ResolvedTier]:
+        tiers = self.current_tiers()
         key = (requested or "").strip()
         if key in AUTO_MODELS:
-            return list(self.tiers)
-        by_name = [tier for tier in self.tiers if tier.name == key]
+            return list(tiers)
+        by_name = [tier for tier in tiers if tier.name == key]
         if by_name:
             return by_name
-        by_label = [tier for tier in self.tiers if tier.tier == key]
+        by_label = [tier for tier in tiers if tier.tier == key]
         if by_label:
             return by_label
-        allowed = sorted({"auto", *(t.name for t in self.tiers), *(t.tier for t in self.tiers)})
+        allowed = sorted({"auto", *(t.name for t in tiers), *(t.tier for t in tiers)})
         raise UnknownModelError(f"unknown model '{key}', allowed values: {allowed}")
 
     async def describe(self) -> list[dict[str, Any]]:
         described = []
-        for tier in self.tiers:
+        for tier in self.current_tiers():
             available, reason = await tier.availability(self.probe_timeout)
             described.append({**tier.describe(), "available": available, "reason": reason})
         return described
+
+    def in_flight(self, name: str) -> int:
+        limiter = self._limiters.get(name)
+        return limiter.in_use if limiter is not None else 0
+
+    def _limiter(self, tier: ResolvedTier) -> ConcurrencyLimiter:
+        limiter = self._limiters.get(tier.name)
+        if limiter is None:
+            limiter = self._limiters[tier.name] = ConcurrencyLimiter(tier.max_concurrency)
+        elif limiter.limit != tier.max_concurrency:
+            limiter.resize(tier.max_concurrency)
+        return limiter
 
     def _call_kwargs(
         self, tier: ResolvedTier, messages: list[dict[str, Any]], params: dict[str, Any], *, stream: bool = False
@@ -135,16 +192,23 @@ class ModelRouter:
         for tier in candidates:
             if not await self._is_available(tier, attempts):
                 continue
-            started = time.perf_counter()
-            try:
-                response = await litellm.acompletion(**self._call_kwargs(tier, messages, params))
-            except Exception as exc:  # noqa: BLE001 - classified in _record_failure
-                self._record_failure(tier, exc, started, attempts)
-                self._ledger_failure(tier, ctx, started, stream=False)
+            limiter = self._limiter(tier)
+            if not await limiter.acquire(tier.queue_wait):
+                attempts.append(_saturated(tier))
                 continue
-            self._record_success(tier, started, attempts)
-            self._ledger_success(tier, ctx, response, started)
-            return response, tier, attempts
+            try:
+                started = time.perf_counter()
+                try:
+                    response = await litellm.acompletion(**self._call_kwargs(tier, messages, params))
+                except Exception as exc:  # noqa: BLE001 - classified in _record_failure
+                    self._record_failure(tier, exc, started, attempts)
+                    self._ledger_failure(tier, ctx, started, stream=False)
+                    continue
+                self._record_success(tier, started, attempts)
+                self._ledger_success(tier, ctx, response, started)
+                return response, tier, attempts
+            finally:
+                limiter.release()
         raise AllTiersFailedError(attempts)
 
     async def stream(
@@ -156,11 +220,18 @@ class ModelRouter:
         tiers: list[ResolvedTier] | None = None,
         ctx: dict[str, Any] | None = None,
     ) -> StreamResult:
-        """Open a stream on the first tier that yields a chunk; fallback only happens before that."""
+        """Open a stream on the first tier that yields a chunk; fallback only happens before that.
+
+        The tier's slot is held until record_stream() runs, i.e. until the stream has ended.
+        """
         attempts: list[dict[str, Any]] = []
         candidates = tiers if tiers is not None else self.select(requested)
         for tier in candidates:
             if not await self._is_available(tier, attempts):
+                continue
+            limiter = self._limiter(tier)
+            if not await limiter.acquire(tier.queue_wait):
+                attempts.append(_saturated(tier))
                 continue
             started = time.perf_counter()
             try:
@@ -168,10 +239,12 @@ class ModelRouter:
                 iterator = response.__aiter__()
                 first_chunk = await iterator.__anext__()
             except StopAsyncIteration:
+                limiter.release()
                 self._record_failure(tier, RuntimeError("empty stream"), started, attempts)
                 self._ledger_failure(tier, ctx, started, stream=True)
                 continue
             except Exception as exc:  # noqa: BLE001 - classified in _record_failure
+                limiter.release()
                 self._record_failure(tier, exc, started, attempts)
                 self._ledger_failure(tier, ctx, started, stream=True)
                 continue
@@ -183,29 +256,35 @@ class ModelRouter:
                 messages=messages,
                 ctx=ctx,
                 started=started,
+                release=limiter.release,
             )
         raise AllTiersFailedError(attempts)
 
     def record_stream(self, result: StreamResult, *, text: str, usage: Any, status: str) -> None:
-        """Ledger row for a finished stream. Usage comes from the provider's final chunk when it sent one."""
-        if self.ledger is None or result.ctx is None:
-            return
-        tier = result.tier
-        prompt, completion = tokens_from_usage(usage)
-        estimated = prompt is None or completion is None
-        if estimated:
-            prompt = _estimate_prompt_tokens(tier, result.messages)
-            completion = len(text) // 4
-        cost, source = price_call(
-            tier_label=tier.tier, price_in=tier.price_in, price_out=tier.price_out,
-            prompt_tokens=prompt, completion_tokens=completion, litellm_model=tier.litellm_model,
-        )
-        if estimated and source == "tier":
-            source = "tier-estimated"
-        self._write_ledger(
-            result.ctx, tier, prompt=prompt, completion=completion, cost=cost, source=source,
-            started=result.started, status=status, stream=True,
-        )
+        """Ledger row for a finished stream, and release of its slot. Usage comes from the provider's final chunk when sent."""
+        try:
+            if self.ledger is None or result.ctx is None:
+                return
+            tier = result.tier
+            prompt, completion = tokens_from_usage(usage)
+            estimated = prompt is None or completion is None
+            if estimated:
+                prompt = _estimate_prompt_tokens(tier, result.messages)
+                completion = len(text) // 4
+            cost, source = price_call(
+                tier_label=tier.tier, price_in=tier.price_in, price_out=tier.price_out,
+                prompt_tokens=prompt, completion_tokens=completion, litellm_model=tier.litellm_model,
+            )
+            if estimated and source == "tier":
+                source = "tier-estimated"
+            self._write_ledger(
+                result.ctx, tier, prompt=prompt, completion=completion, cost=cost, source=source,
+                started=result.started, status=status, stream=True,
+            )
+        finally:
+            if result.release is not None:
+                result.release()
+                result.release = None
 
     async def _is_available(self, tier: ResolvedTier, attempts: list[dict[str, Any]]) -> bool:
         available, reason = await tier.availability(self.probe_timeout)
@@ -285,6 +364,16 @@ class ModelRouter:
         elapsed_ms = round((time.perf_counter() - started) * 1000)
         attempts.append({"name": tier.name, "model": tier.model, "tier": tier.tier, "status": "ok", "latency_ms": elapsed_ms})
         logger.info("served by tier %s (%s) in %d ms", tier.name, tier.litellm_model, elapsed_ms)
+
+
+def _saturated(tier: ResolvedTier) -> dict[str, Any]:
+    return {
+        "name": tier.name,
+        "model": tier.model,
+        "tier": tier.tier,
+        "status": "skipped",
+        "reason": f"saturated: {tier.max_concurrency} request(s) already running, waited {tier.queue_wait:g}s",
+    }
 
 
 async def _prepend(first: Any, rest: AsyncIterator[Any]) -> AsyncIterator[Any]:

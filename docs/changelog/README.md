@@ -29,3 +29,4 @@ Her özellik veya önemli değişiklik, **commit atılmadan önce** bu klasöre 
 | [2026-11-23](2026-11-23-gateway-provider-keys.md) | Gateway sağlayıcı anahtarları: düz metin .env yerine Keychain | `commit bekliyor` |
 | [2026-11-23](2026-11-23-client-usage-budget.md) | İstemci: `--job` / `--budget`, `magent usage`, `budget`, `models` (v0.5.0) | `main'de` (0337420) |
 | [2026-11-23](2026-11-23-gateway-usage-budget.md) | Gateway: kullanım kaydı, günlük bütçe, admin uçları (v0.5.0) | `main'de` (0337420) |
+| [2026-11-23](2026-11-23-live-control-concurrency.md) | Canlı katman/bütçe kontrolü, katman başına eşzamanlılık | `commit bekliyor` |
