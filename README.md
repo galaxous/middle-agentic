@@ -125,10 +125,12 @@ Gateway'in her istemci için ayrı anahtarı vardır ve her anahtarın yalnızca
 | `memory:write` | Kayıt yazma, hook'lar | evet |
 | `models` | Sohbet ve MCP `ask` (provider maliyeti) | hayır |
 | `memory:delete` | Uzaktan `forget` | hayır |
+| `admin` | Salt okunur yönetim uçları: `/admin/usage`, `/admin/budget`, `/admin/models` | hayır |
 
 ```bash
 magent key create macbook-cursor --scopes memory:read,memory:write,models
 magent key set-scopes macbook-cursor --scopes memory:read,memory:write   # kapsamı daralt
+magent key create client-admin --scopes memory:read,memory:write,models,admin   # kullanım ve bütçe komutları için
 ```
 
 Hook'lar okuma ve yazma kapsamı ister; Cursor'un `ask` aracı `models` ister.
@@ -251,6 +253,28 @@ chain:
 
 Yerel OpenAI uyumlu sunuculara gerçek `OPENAI_API_KEY` asla gönderilmez; bunun yerine sabit bir yer tutucu anahtar kullanılır.
 
+## Kullanım ve günlük bütçe
+
+Gateway her model denemesini kaydeder: anahtar, iş etiketi, katman, token sayıları, maliyet, gecikme ve sonuç. Başarısız denemeler 0 maliyetle kaydedilir. Akış (stream) istekleri de kaydedilir.
+
+Günlük harcama sınırı, otonom işçilerin kontrolsüz harcamasını önlemek içindir. Varsayılan **günde $1**; gün, gateway makinesinin yerel gününe göre sıfırlanır.
+
+```yaml
+# config.yaml (gateway makinesi)
+budget:
+  daily_usd: 1.0          # 0 = sınır yok
+  on_exceed: downgrade    # downgrade: yalnız ücretsiz/yerel katmanlar çalışır | block: 429 döner
+chain:
+  - { name: luna, tier: paid, runtime: openai, model: gpt-6-luna, price_in: <USD/1M>, price_out: <USD/1M> }
+```
+
+- `price_in` / `price_out`: katmanın USD / 1M token fiyatı. Tanımlıysa LiteLLM'in fiyat tablosunun önüne geçer; yeni çıkan modeller için buradan girin.
+- Sınır dolduğunda `downgrade` modunda ücretli katmanlar atlanır; `block` modunda istek 429 (`budget_exceeded`) alır ve sağlayıcıya gitmez.
+- İstemci `--budget` (ya da `X-Budget-USD` başlığı) ile tek bir isteğin sınırını düşürebilir; yükseltemez.
+- Yanıt başlığı `X-Gateway-Budget` (`ok`, `downgraded`, `blocked`) hangi modun uygulandığını gösterir.
+
+Sınırlar: bütçe, istek bittikten sonra kaydedilen maliyete göre denetlenir; bu yüzden bir istek kalan bütçeden pahalıysa yine tamamlanabilir. Fiyatı bilinmeyen ücretli modellerin maliyeti 0 kaydedilir (`cost_src: unknown`); bunları `price_in` / `price_out` ile tanımlayın. Ücretsiz katmanlar da LiteLLM'in liste fiyatıyla sayılır.
+
 ## İstemci araçları
 
 ### CLI
@@ -264,6 +288,10 @@ magent hook record "Postgres'e geçmeye karar verdik" --role decision
 magent hook context "veritabanı kararı"
 magent hook forget "deneme sorusu" [--id ID] [--role user] [--yes]   # --yes olmadan yalnızca listeler
 magent health --node acer
+magent ask "..." --job daily-digest --budget 0.05   # iş etiketi ve bu istek için bütçe sınırı
+magent usage [--by tier|key|job|day] [--days N] [--json]   # harcama (admin anahtarı gerekir)
+magent budget [--json]                              # bugünkü harcama ve günlük sınır (admin anahtarı gerekir)
+magent models [--json]                              # katmanlar, fiyatlar, durum (admin anahtarı gerekir)
 magent llm pull qwen2.5:7b | list | status
 magent serve                                   # gateway'i ön planda çalıştır
 magent service install | uninstall | status
@@ -383,6 +411,9 @@ Hook scripti (`integrations/hooks/magent_hook.py`) yalnızca standart kütüphan
 | `GET /v1/memory/sessions` | Oturum listesi |
 | `GET /v1/memory/sessions/{id}` | Oturumun grafı (düğümler ve kenarlar) |
 | `POST /v1/hooks/{cursor\|claude}/{event}` | Aracın ham hook payload'unu alır, aracın beklediği formatta cevap döner |
+| `GET /admin/usage` | Harcama ve istek sayısı. `by=tier\|key\|job\|day`, `days=N`. Yalnız `admin` kapsamı. |
+| `GET /admin/budget` | Bugünkü harcama, günlük sınır ve politika. Yalnız `admin` kapsamı. |
+| `GET /admin/models` | Katmanlar, fiyatlar ve durum. Yalnız `admin` kapsamı. |
 
 Chat yanıt header'ları:
 
@@ -391,11 +422,14 @@ Chat yanıt header'ları:
 - `X-Gateway-Model`: kullanılan model.
 - `X-Gateway-Session`: hafıza oturumu.
 - `X-Gateway-Attempts`: denenen katman sayısı.
+- `X-Gateway-Budget`: günlük bütçe durumu (`ok`, `downgraded`, `blocked`).
 
 İstek header'ları:
 
 - `X-Session-Id`: hafıza oturumunu seçer.
 - `X-Memory: off`: istek bazında hafızayı kapatır.
+- `X-Job`: iş etiketi; `magent usage --by job` ile harcamayı işe göre gruplar.
+- `X-Budget-USD`: bu isteğin bütçe sınırı (USD). Yalnız düşürür; geçersiz değer `400` döner.
 
 Streaming'de fallback yalnızca ilk chunk gelmeden önce yapılır. Stream ortasında oluşan bir hata, SSE içinde `error` olayı olarak iletilir.
 
