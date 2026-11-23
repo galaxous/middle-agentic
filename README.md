@@ -37,64 +37,85 @@ Varsayılan zincir önce bulutu dener: `gemini-2.5-flash` > `openrouter/free` > 
 
 ## Hızlı kurulum
 
-Her cihazda bağlanacak makinenin (ör. MacBook) public key'i gerekir: `cat ~/.ssh/id_ed25519.pub`. Key yoksa `ssh-keygen -t ed25519` ile oluşturun. Tailscale auth key'i [admin panelinden](https://login.tailscale.com/admin/settings/keys) alabilirsiniz; verilmezse kurulumdan sonra `tailscale up` ile elle bağlanırsınız.
+Kurulum iki adım ve repo indirmeyi gerektirmez. Her şey sürüm etiketindeki (v0.4.0) betiklerden yapılır.
 
-### Linux / macOS / Raspberry Pi
+**Önce hazırlayın:** her cihazın SSH public key'i (`cat ~/.ssh/id_ed25519.pub`; yoksa `ssh-keygen -t ed25519`) ve bir Tailscale auth key'i ([admin panelinden](https://login.tailscale.com/admin/settings/keys)). Auth key verilmezse adım 1'den sonra `tailscale up` ile elle bağlanın.
+
+### Adım 1: ağ ve SSH (repo gerekmez)
+
+Bu adım SSH'ı açar, Tailscale'i kurup ağa katar, gerekirse Ollama'yı kurar. Gateway servisine dokunmaz.
+
+macOS, Linux ve Raspberry Pi:
+
+```bash
+# gateway Mac (Tailscale + SSH + yerel model)
+curl -fsSL https://raw.githubusercontent.com/galaxous/middle-agentic/v0.4.0/scripts/bootstrap-unix.sh | bash -s -- \
+  --pubkey "$(cat ~/.ssh/id_ed25519.pub)" --roles gateway,llm --ts-authkey tskey-auth-... \
+  --skip-venv --skip-service
+
+# istemci (Tailscale + SSH, yerel model yok)
+curl -fsSL https://raw.githubusercontent.com/galaxous/middle-agentic/v0.4.0/scripts/bootstrap-unix.sh | bash -s -- \
+  --pubkey "$(cat ~/.ssh/id_ed25519.pub)" --roles client --ts-authkey tskey-auth-... \
+  --skip-venv --skip-service
+```
+
+Windows (yönetici PowerShell):
+
+```powershell
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/galaxous/middle-agentic/v0.4.0/scripts/bootstrap-windows.ps1))) `
+  -PublicKey "ssh-ed25519 AAAA... me@macbook" -Roles gateway,llm -TsAuthKey tskey-auth-... -SkipService
+```
+
+> Raspberry Pi'de Ollama 64-bit OS ister. 32-bit sistemde `llm` rolünü kaldırın; cihaz bulut katmanlarıyla gateway olarak çalışır.
+> Windows betiği Ollama'yı kullanıcı oturumu açıldığında başlatır; başsız bir worker'da otomatik oturum açmayı etkinleştirin.
+
+### Adım 2: magent (repo gerekmez)
+
+**Gateway** (macOS, Linux, Raspberry Pi):
+
+```bash
+curl -fsSL https://github.com/galaxous/middle-agentic/releases/download/v0.4.0/install.sh | sh -s -- --role gateway
+```
+
+Mevcut bir gateway'den taşıyorsanız önce `agent_memory.db`, `.env` ve `config.yaml` dosyalarını bir klasöre kopyalayın, sonra `MAGENT_DATA_DIR=~/magent-data sh install.sh --role gateway` ile çalıştırın. Komut servisi durdurur, veriyi ev dizinine taşır, servisi kurulu sürümle başlatır ve `/health` yanıtını bekler.
+
+**Gateway** (Windows, PowerShell):
+
+```powershell
+$env:MAGENT_ROLE = 'gateway'; irm https://github.com/galaxous/middle-agentic/releases/download/v0.4.0/install.ps1 | iex
+```
+
+**İstemci** (MacBook, Linux, Raspberry Pi): adres ve anahtar sorulur, doğrulanır, sonra kurulur. Hiçbir şey doğrulanmadan yazılmaz.
+
+```bash
+curl -fsSL https://github.com/galaxous/middle-agentic/releases/download/v0.4.0/install.sh | sh
+```
+
+**İstemci** (Windows):
+
+```powershell
+irm https://github.com/galaxous/middle-agentic/releases/download/v0.4.0/install.ps1 | iex
+```
+
+### Güncelleme
+
+Yeni bir sürüm çıktığında aynı kurulum komutunu yeni etiketle yeniden çalıştırın (ör. `v0.4.1`). Gateway'de bu, paketi yeniler ve servisi yeniden başlatır; veri dosyalarına dokunmaz. İstemcide adres ve anahtar tekrar sorulur; mevcut anahtar aynıysa Enter ile geçebilirsiniz.
+
+Yalnızca gateway'de çalışan bir kurulum için manuel yol: `pipx install --force <yeni wheel>` ardından `magent service install`.
+
+### Repo ile geliştirme
+
+Kodu geliştirmek için repo gerekir:
 
 ```bash
 git clone https://github.com/galaxous/middle-agentic.git && cd middle-agentic
-python3 bootstrap.py --pubkey "ssh-ed25519 AAAA... me@macbook" \
-  --roles gateway,llm --ts-authkey tskey-auth-... --model qwen2.5:3b
+python3 -m venv venv && ./venv/bin/pip install -e ".[dev]"
+./venv/bin/pytest
 ```
 
-Script şu adımları uygular:
+Repo'dan kurulum (`bootstrap.py`) hâlâ çalışır; ancak repo'nun silinmesi gereken kurulumlarda yukarıdaki sürüm kurulumunu tercih edin.
 
-1. Sistem paketlerini kurar (git, sqlite, curl ve Python 3.10+).
-2. SSH'ı açar, `~/.ssh` (700) ve `authorized_keys` (600) dosyalarını hazırlar.
-3. Tailscale'i kurar ve auth key verildiyse ağa katılır.
-4. `llm` rolünde Ollama'yı kurar ve başlatır.
-5. `./venv` içine `pip install -e .` ile paketi kurar ve `magent setup` ile `config.yaml` ve `.env` dosyalarını yazar.
-6. `llm` rolünde modeli indirir.
-7. `gateway` rolünde gateway'i servis olarak kaydeder (Linux'ta systemd user unit, macOS'ta launchd). Linux'ta firewall aktifse 8000 portunu yalnızca tailnet adreslerine (`100.64.0.0/10`) açar.
-
-Repoyu klonlamadan yalnızca SSH, Tailscale ve Ollama kurmak için:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/galaxous/middle-agentic/main/scripts/bootstrap-unix.sh | bash -s -- --pubkey "ssh-ed25519 AAAA..." --roles llm
-```
-
-> Raspberry Pi'de Ollama 64-bit OS ister (aarch64). 32-bit sistemde `llm` adımı uyarıyla atlanır; o cihaz bulut katmanlarıyla gateway olarak çalışmaya devam eder.
-
-### Windows 10/11 (Acer worker)
-
-Python 3.10+ yoksa önce `winget install Python.Python.3.12` ile kurun. Ardından:
-
-```powershell
-git clone https://github.com/galaxous/middle-agentic.git; cd middle-agentic
-py -3.12 bootstrap.py --pubkey "ssh-ed25519 AAAA... me@macbook" --roles gateway,llm --ts-authkey tskey-auth-...
-```
-
-`bootstrap.py` önce venv'i kurar, ardından UAC ile yönetici PowerShell açar. `scripts/bootstrap-windows.ps1` şunları yapar:
-
-- **SSH:** OpenSSH Server, firewall, `sshuser`, BOM'suz `authorized_keys` ve `icacls` izinleri.
-- **Ağ ve model:** Tailscale (`--unattended`) ve Ollama, ikisi de winget ile kurulur.
-- **Gateway:** 8000 portu yalnızca tailnet adreslerine açılır. Gateway, açılışta SYSTEM olarak çalışan bir Scheduled Task olarak kaydedilir.
-
-Repoyu klonlamadan yalnızca SSH, Tailscale ve Ollama kurmak için yönetici PowerShell'de:
-
-```powershell
-& ([scriptblock]::Create((irm https://raw.githubusercontent.com/galaxous/middle-agentic/main/scripts/bootstrap-windows.ps1))) -PublicKey "ssh-ed25519 AAAA..." -Roles llm -TsAuthKey tskey-auth-...
-```
-
-> Ollama for Windows kullanıcı oturumu açıldığında başlar. Başsız bir worker'da otomatik oturum açmayı etkinleştirin, aksi halde yerel katman biri giriş yapana kadar atlanır (zincir buluta düşer).
-
-### İstemci cihaz (MacBook)
-
-```bash
-python3 bootstrap.py --pubkey "$(cat ~/.ssh/id_ed25519.pub)" --roles client --ts-authkey tskey-auth-...
-./venv/bin/magent token set gateway        # gateway'de üretilen anahtarı gizli prompt'a yapıştırın
-./venv/bin/magent nodes
-```
+### Anahtarlar ve kapsamlar
 
 Gateway'in her istemci için ayrı anahtarı vardır ve her anahtarın yalnızca ihtiyaç duyduğu kapsamları olur:
 
