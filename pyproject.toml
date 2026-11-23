@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "middle-agentic"
-version = "0.6.0"
+version = "0.7.0"
 description = "Cross-platform middle-agent node: bootstrap, LLM gateway with fallback chain, graph memory, hooks, CLI, SDK and MCP server."
 readme = "README.md"
 requires-python = ">=3.10"
