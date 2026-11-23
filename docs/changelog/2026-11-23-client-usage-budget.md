@@ -2,7 +2,7 @@
 
 ## Durum
 
-`main'de` (0337420), v0.5.0 yayınlandı. Yalnızca istemci (SDK ve `magent` CLI). Gateway tarafı (kullanım kaydı, bütçe, `/admin` uçları) henüz yazılmadı; bu komutlar gateway v0.5.0 yayınlanana kadar 404/403 dönecek. Yayın ve gateway testi manuel yapılacak.
+`main'de` (0337420), v0.5.0 yayınlandı. Yalnızca istemci (SDK ve `magent` CLI). Gateway tarafı aynı sürümde yayınlandı ([2026-11-23-gateway-usage-budget.md](2026-11-23-gateway-usage-budget.md)). Bu komutlar `/admin` uçları olan bir gateway (v0.5.0+) gerektirir; eski gateway'de 404 döner.
 
 ## Sorun
 
