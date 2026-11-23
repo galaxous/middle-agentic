@@ -30,4 +30,4 @@ Her özellik veya önemli değişiklik, **commit atılmadan önce** bu klasöre 
 | [2026-11-23](2026-11-23-client-usage-budget.md) | İstemci: `--job` / `--budget`, `magent usage`, `budget`, `models` (v0.5.0) | `main'de` (0337420) |
 | [2026-11-23](2026-11-23-gateway-usage-budget.md) | Gateway: kullanım kaydı, günlük bütçe, admin uçları (v0.5.0) | `main'de` (0337420) |
 | [2026-11-23](2026-11-23-live-control-concurrency.md) | Canlı katman/bütçe kontrolü, katman başına eşzamanlılık (v0.6.0) | `main'de` (134b84e) |
-| [2026-11-24](2026-11-24-faz1-tamamlama.md) | Faz 1 tamamlama: istek sınırı, soğuma, yetenek bayrakları, profiller, katman testi | `commit bekliyor` |
+| [2026-11-24](2026-11-24-faz1-tamamlama.md) | Faz 1 tamamlama: istek sınırı, soğuma, yetenek bayrakları, profiller, katman testi, anahtar bütçesi (v0.7.0) | `main'de` (bf69056) |

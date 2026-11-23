@@ -1,8 +1,8 @@
-# 2026-11-24 · Faz 1 tamamlama: katman sınırları, yetenek bayrakları, profiller, katman testi · commit bekliyor
+# 2026-11-24 · Faz 1 tamamlama: katman sınırları, yetenek bayrakları, profiller, katman testi · main'de (bf69056), v0.7.0
 
 ## Durum
 
-`commit bekliyor`. Kod ve testler hazır (238 geçiyor). Plandaki Faz 1 maddelerinden 1, 2, 3, 4, 5 ve 6 bu değişiklikle tamamlandı; yalnızca tahmini rezervasyon (madde 7) kaldı.
+`main'de` (bf69056). v0.7.0 olarak yayınlandı (sürüm commit'i ebdcd15). Kod ve testler hazır (238 geçiyor). Plandaki Faz 1 maddelerinden 1, 2, 3, 4, 5 ve 6 bu değişiklikle tamamlandı; yalnızca tahmini rezervasyon (madde 7) kaldı.
 
 ## Sorun
 
