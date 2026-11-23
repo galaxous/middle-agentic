@@ -27,6 +27,8 @@ def main() -> int:
     version = re.search(r'__version__ = "([^"]+)"', (ROOT / "middle_agentic" / "__init__.py").read_text()).group(1)
     dist = ROOT / "dist"
     dist.mkdir(exist_ok=True)
+    for stale in dist.glob("middle_agentic-*.whl"):  # an older wheel must never end up in this release
+        stale.unlink()
     # Run from outside the repo: a local build/ directory would shadow the `build` module.
     subprocess.run([sys.executable, "-m", "build", "--wheel", "--outdir", str(dist), str(ROOT)], check=True,
                    cwd=tempfile.gettempdir())
