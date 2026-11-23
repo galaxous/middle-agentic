@@ -284,7 +284,34 @@ magent models set local --concurrency 2 --queue-wait 5
 magent models set luna --concurrency 0     # 0 = sınır yok
 ```
 
+**Anahtar başına bütçe (isteğe bağlı, varsayılan kapalı):** Bir anahtara kendi günlük sınırını verebilirsiniz. Bu anahtar için genel `budget` yerine geçer; diğer anahtarlar etkilenmez. Hiç verilmezse genel bütçe geçerli kalır.
+
+```bash
+magent key create worker-news --scopes memory:read,memory:write,models --budget 0.20 --on-exceed downgrade
+magent key set-budget worker-news --budget 0.5           # sonradan değiştir
+magent key set-budget worker-news --clear-budget         # genel bütçeye dön
+magent budget --key worker-news                          # o anahtarın harcaması ve sınırı (admin anahtarı gerekir)
+magent budget set --key worker-news --daily 0.5 --on-exceed block
+```
+
 Sınırlar: bütçe, istek bittikten sonra kaydedilen maliyete göre denetlenir; bu yüzden bir istek kalan bütçeden pahalıysa yine tamamlanabilir. Fiyatı bilinmeyen ücretli modellerin maliyeti 0 kaydedilir (`cost_src: unknown`); bunları `price_in` / `price_out` ile tanımlayın. Ücretsiz katmanlar da LiteLLM'in liste fiyatıyla sayılır.
+
+### Katman kontrolleri
+
+Her katman için ek sınırlar tanımlanabilir (hepsi isteğe bağlıdır):
+
+| Alan | Anlamı |
+| --- | --- |
+| `daily_request_cap` | Günlük deneme sayısı; sınıra ulaşınca katman atlanır. `reset_tz` günün sınırını belirler (ör. Gemini için `America/Los_Angeles`). |
+| `cooldown_seconds` | Hız sınırı (429) alan katman bu süre boyunca denenmez (varsayılan 900 sn). |
+| `supports_tools: false` | Araç çağrısı içeren istekler bu katmana gönderilmez. |
+| `context_window` | İstem bu boyutu aşıyorsa katman atlanır. |
+
+Atlanan her katman, yanıtta `attempts` içinde nedeniyle birlikte görünür (ör. `cooling down after a rate limit`, `daily request cap reached`).
+
+**Profiller:** `model` alanına `profile:cheap-first` (önce yerel ve ücretsiz, sonra fiyata göre) veya `profile:quality-first` (önce en pahalı) yazılabilir.
+
+**Katman testi:** `magent models test <katman>` katmanı zincir ve bütçe dışında tek bir kısa istekle sınar; gecikme, token, maliyet ve kaynak (`tier`, `litellm`, `unknown`) gösterir. Yeni bir model eklerken fiyatını ve kimliğini bununla doğrulayın.
 
 ## İstemci araçları
 
@@ -309,6 +336,8 @@ magent models disable|enable <katman>               # katmanı zincirden çıkar
 magent models set <katman> [--model M] [--timeout S] [--price-in X] [--price-out Y] [--concurrency N] [--queue-wait S]
 magent models reorder <katman1> <katman2> ...       # zincir sırasını değiştir (listelenmeyenler sonda kalır)
 magent models reset [<katman>...] [--all]           # config.yaml'daki haline dön
+magent models test <katman>                         # tek kısa istekle katmanı sına (maliyet ve gecikme gösterir)
+magent budget --key <ad> | set --key <ad> --daily X | reset --key <ad>   # anahtar başına bütçe
 magent llm pull qwen2.5:7b | list | status
 magent serve                                   # gateway'i ön planda çalıştır
 magent service install | uninstall | status

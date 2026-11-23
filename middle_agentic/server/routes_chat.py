@@ -191,6 +191,12 @@ async def chat_completions(
 
     key_name = current_key() or "-"
     daily_usd, on_exceed = state.budget_policy()
+    # A key with its own budget replaces the gateway-wide cap for that key only; keys without one are unchanged.
+    key_daily, key_on_exceed = state.keys.budget_for(key_name)
+    if key_daily is not None:
+        daily_usd = key_daily
+    if key_on_exceed is not None:
+        on_exceed = key_on_exceed
     budget = effective_budget(daily_usd, request_budget)
     spent = state.usage.spent_on(UsageLedger.today(), key_name)
     decision = decide(candidates, spent_usd=spent, budget_usd=budget, on_exceed=on_exceed)

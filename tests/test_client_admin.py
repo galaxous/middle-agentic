@@ -168,3 +168,16 @@ def test_cli_budget_set_and_reset(captured: list[httpx.Request], capsys: pytest.
     assert json.loads(captured[-1].content) == {"daily_usd": 0.25, "on_exceed": "block"}
     assert main(["budget", "reset", "--node", URL]) == 0
     assert captured[-1].method == "DELETE"
+
+
+def test_cli_models_test_posts_to_the_tier_test_endpoint(captured: list[httpx.Request], capsys: pytest.CaptureFixture[str]) -> None:
+    assert main(["models", "test", "luna", "--node", URL]) == 0
+    assert captured[-1].method == "POST" and captured[-1].url.path == "/admin/models/luna/test"
+
+
+def test_cli_budget_for_one_key(captured: list[httpx.Request], capsys: pytest.CaptureFixture[str]) -> None:
+    assert main(["budget", "set", "--key", "macbook-model", "--daily", "0.5", "--on-exceed", "block", "--node", URL]) == 0
+    assert captured[-1].method == "PUT" and captured[-1].url.path == "/admin/keys/macbook-model/budget"
+    assert json.loads(captured[-1].content) == {"daily_usd": 0.5, "on_exceed": "block"}
+    assert main(["budget", "reset", "--key", "macbook-model", "--node", URL]) == 0
+    assert json.loads(captured[-1].content) == {"clear": True}

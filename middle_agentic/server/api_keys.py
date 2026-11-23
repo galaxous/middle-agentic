@@ -32,7 +32,16 @@ TABLE = "gateway_api_keys"
 SCOPES = ("memory:read", "memory:write", "memory:delete", "models", "admin")
 DEFAULT_SCOPES = ("memory:read", "memory:write")
 DEFAULT_EXPIRY_DAYS = 90
-_KEY_COLUMNS = {"scopes": "TEXT NOT NULL DEFAULT ''", "expires_at": "REAL", "daily_limit": "INTEGER", "per_minute": "INTEGER"}
+_KEY_COLUMNS = {
+    "scopes": "TEXT NOT NULL DEFAULT ''",
+    "expires_at": "REAL",
+    "daily_limit": "INTEGER",
+    "per_minute": "INTEGER",
+    # Optional per-key daily spend cap. NULL = the gateway-wide budget applies (the default).
+    "daily_usd": "REAL",
+    "on_exceed": "TEXT",
+}
+ON_EXCEED = ("downgrade", "block")
 
 
 class ApiKeyError(ValueError):
@@ -121,6 +130,8 @@ class ApiKeyStore:
         expires_days: float | None = DEFAULT_EXPIRY_DAYS,
         daily_limit: int | None = None,
         per_minute: int | None = None,
+        budget_usd: float | None = None,
+        on_exceed: str | None = None,
     ) -> str:
         """Create a key and return it. The caller shows it to the user now; only its hash is stored."""
         if not name or len(name) > 64 or not all(c.isalnum() or c in "-_." for c in name):
@@ -128,14 +139,16 @@ class ApiKeyStore:
         granted = ",".join(parse_scopes(scopes))
         expires_at = _expiry_from_days(expires_days)
         _check_limits(daily_limit, per_minute)
+        _check_budget(budget_usd, on_exceed)
         key = value or KEY_PREFIX + secrets.token_urlsafe(32)
         with closing(self._connect()) as connection, connection:
             if connection.execute(f"SELECT 1 FROM {TABLE} WHERE name = ?", (name,)).fetchone():
                 raise ApiKeyError(f"a key named '{name}' already exists; revoke it first or choose another name")
             connection.execute(
-                f"INSERT INTO {TABLE} (name, key_hash, created_at, scopes, expires_at, daily_limit, per_minute) "
-                f"VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (name, _digest(key), time.time(), granted, expires_at, daily_limit or None, per_minute or None),
+                f"INSERT INTO {TABLE} (name, key_hash, created_at, scopes, expires_at, daily_limit, per_minute, "
+                f"daily_usd, on_exceed) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (name, _digest(key), time.time(), granted, expires_at, daily_limit or None, per_minute or None,
+                 budget_usd, on_exceed),
             )
         return key
 
@@ -216,11 +229,42 @@ class ApiKeyStore:
             connection.execute(f"UPDATE {TABLE} SET daily_limit = ?, per_minute = ? WHERE name = ?", (new_daily, new_minute, name))
             return True
 
+    def budget_for(self, name: str) -> tuple[float | None, str | None]:
+        """This key's own daily cap and on_exceed mode; (None, None) means the gateway-wide budget applies."""
+        with closing(self._connect()) as connection:
+            row = connection.execute(
+                f"SELECT daily_usd, on_exceed FROM {TABLE} WHERE name = ? AND revoked = 0", (name,)
+            ).fetchone()
+        if row is None:
+            return None, None
+        return row["daily_usd"], row["on_exceed"]
+
+    def set_budget(
+        self, name: str, budget_usd: float | None = None, on_exceed: str | None = None, *, clear: bool = False
+    ) -> bool:
+        """Set or clear this key's own daily cap. Set only the fields given; clear=True removes the cap."""
+        if clear:
+            budget_usd, on_exceed = None, None
+        else:
+            _check_budget(budget_usd, on_exceed)
+        with closing(self._connect()) as connection, connection:
+            if clear:
+                cursor = connection.execute(
+                    f"UPDATE {TABLE} SET daily_usd = NULL, on_exceed = NULL WHERE name = ? AND revoked = 0", (name,)
+                )
+            else:
+                cursor = connection.execute(
+                    f"UPDATE {TABLE} SET daily_usd = COALESCE(?, daily_usd), on_exceed = COALESCE(?, on_exceed) "
+                    f"WHERE name = ? AND revoked = 0",
+                    (budget_usd, on_exceed, name),
+                )
+            return cursor.rowcount > 0
+
     def list(self) -> list[dict[str, Any]]:
         with closing(self._connect()) as connection:
             rows = connection.execute(
-                f"SELECT name, created_at, last_used_at, revoked, scopes, expires_at, daily_limit, per_minute "
-                f"FROM {TABLE} ORDER BY created_at"
+                f"SELECT name, created_at, last_used_at, revoked, scopes, expires_at, daily_limit, per_minute, "
+                f"daily_usd, on_exceed FROM {TABLE} ORDER BY created_at"
             ).fetchall()
         return [dict(row) for row in rows]
 
@@ -232,6 +276,13 @@ class ApiKeyStore:
     def active_count(self) -> int:
         with closing(self._connect()) as connection:
             return connection.execute(f"SELECT COUNT(*) FROM {TABLE} WHERE revoked = 0").fetchone()[0]
+
+
+def _check_budget(budget_usd: float | None, on_exceed: str | None) -> None:
+    if budget_usd is not None and (budget_usd != budget_usd or budget_usd <= 0):
+        raise ApiKeyError("key budget must be a positive amount of USD (remove it to use the gateway budget)")
+    if on_exceed is not None and on_exceed not in ON_EXCEED:
+        raise ApiKeyError(f"on_exceed must be one of {', '.join(ON_EXCEED)}")
 
 
 def _check_limits(daily_limit: int | None, per_minute: int | None) -> None:

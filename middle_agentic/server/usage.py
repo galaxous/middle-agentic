@@ -139,6 +139,14 @@ class UsageLedger:
         with closing(self._connect()) as connection:
             return float(connection.execute(sql, params).fetchone()[0])
 
+    def requests_since(self, tier_name: str, since: float) -> int:
+        """Attempts that reached the provider for this tier since a timestamp (429s and other failures included)."""
+        with closing(self._connect()) as connection:
+            return int(connection.execute(
+                f"SELECT COUNT(*) FROM {TABLE} WHERE tier_name = ? AND ts >= ? AND status IN ('ok', 'failed')",
+                (tier_name, since),
+            ).fetchone()[0])
+
     def summary(self, by: str, days: int) -> list[dict[str, Any]]:
         if by not in _GROUP_COLUMNS:
             raise ValueError(f"group by must be one of {sorted(_GROUP_COLUMNS)}")

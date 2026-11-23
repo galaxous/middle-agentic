@@ -20,8 +20,11 @@ pass ``tiers`` to run only a subset, which is how the daily budget downgrades a 
 from __future__ import annotations
 
 import logging
+import math
 import time
 from collections.abc import AsyncIterator, Callable
+from datetime import datetime
+from zoneinfo import ZoneInfo
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -38,6 +41,8 @@ if TYPE_CHECKING:  # pragma: no cover
 logger = logging.getLogger("middle_agentic.chain")
 
 AUTO_MODELS = frozenset({"", "auto", "middle-agent"})
+PROFILE_PREFIX = "profile:"
+PROFILES = ("cheap-first", "quality-first")
 
 # Only the tier decides where a request goes and with which credentials.
 ROUTING_KEYS = frozenset({
@@ -111,6 +116,7 @@ class ModelRouter:
         self._effective: list[ResolvedTier] | None = None
         self._effective_version: Any = None
         self._limiters: dict[str, ConcurrencyLimiter] = {}
+        self._cooldown: dict[str, float] = {}  # tier name -> monotonic time when it may be tried again
 
     # -- chain ---------------------------------------------------------------------------
     @property
@@ -138,6 +144,11 @@ class ModelRouter:
     def select(self, requested: str | None) -> list[ResolvedTier]:
         tiers = self.current_tiers()
         key = (requested or "").strip()
+        if key.startswith(PROFILE_PREFIX):
+            profile = key[len(PROFILE_PREFIX):]
+            if profile not in PROFILES:
+                raise UnknownModelError(f"unknown profile '{profile}', choose one of {list(PROFILES)}")
+            return _order_for_profile(tiers, profile)
         if key in AUTO_MODELS:
             return list(tiers)
         by_name = [tier for tier in tiers if tier.name == key]
@@ -146,7 +157,7 @@ class ModelRouter:
         by_label = [tier for tier in tiers if tier.tier == key]
         if by_label:
             return by_label
-        allowed = sorted({"auto", *(t.name for t in tiers), *(t.tier for t in tiers)})
+        allowed = sorted({"auto", *(f"{PROFILE_PREFIX}{p}" for p in PROFILES), *(t.name for t in tiers), *(t.tier for t in tiers)})
         raise UnknownModelError(f"unknown model '{key}', allowed values: {allowed}")
 
     async def describe(self) -> list[dict[str, Any]]:
@@ -190,7 +201,7 @@ class ModelRouter:
         attempts: list[dict[str, Any]] = []
         candidates = tiers if tiers is not None else self.select(requested)
         for tier in candidates:
-            if not await self._is_available(tier, attempts):
+            if not await self._admit(tier, attempts, messages, params):
                 continue
             limiter = self._limiter(tier)
             if not await limiter.acquire(tier.queue_wait):
@@ -227,7 +238,7 @@ class ModelRouter:
         attempts: list[dict[str, Any]] = []
         candidates = tiers if tiers is not None else self.select(requested)
         for tier in candidates:
-            if not await self._is_available(tier, attempts):
+            if not await self._admit(tier, attempts, messages, params):
                 continue
             limiter = self._limiter(tier)
             if not await limiter.acquire(tier.queue_wait):
@@ -286,11 +297,65 @@ class ModelRouter:
                 result.release()
                 result.release = None
 
-    async def _is_available(self, tier: ResolvedTier, attempts: list[dict[str, Any]]) -> bool:
-        available, reason = await tier.availability(self.probe_timeout)
-        if not available:
-            attempts.append({"name": tier.name, "model": tier.model, "tier": tier.tier, "status": "skipped", "reason": reason})
-        return available
+    async def _admit(
+        self, tier: ResolvedTier, attempts: list[dict[str, Any]], messages: list[dict[str, Any]], params: dict[str, Any]
+    ) -> bool:
+        """Whether this tier may be tried for this request. A refusal is recorded as a skipped attempt with its reason."""
+        reason = self._skip_reason(tier, messages, params)
+        if reason is None:
+            available, detail = await tier.availability(self.probe_timeout)
+            if available:
+                return True
+            reason = detail
+        attempts.append({"name": tier.name, "model": tier.model, "tier": tier.tier, "status": "skipped", "reason": reason})
+        return False
+
+    def _skip_reason(self, tier: ResolvedTier, messages: list[dict[str, Any]], params: dict[str, Any]) -> str | None:
+        until = self._cooldown.get(tier.name)
+        if until is not None:
+            remaining = until - time.monotonic()
+            if remaining > 0:
+                return f"cooling down after a rate limit ({math.ceil(remaining)}s left)"
+            self._cooldown.pop(tier.name, None)
+        if tier.daily_request_cap is not None and self.ledger is not None:
+            used = self.ledger.requests_since(tier.name, _day_start(tier.reset_tz))
+            if used >= tier.daily_request_cap:
+                return f"daily request cap reached ({used}/{tier.daily_request_cap})"
+        if params.get("tools") and tier.supports_tools is False:
+            return "capability: this tier does not support tool calls"
+        if tier.context_window is not None:
+            estimated = _rough_tokens(messages)
+            if estimated > tier.context_window:
+                return f"capability: prompt (~{estimated} tokens) exceeds the context window ({tier.context_window})"
+        return None
+
+    async def probe(self, name: str) -> dict[str, Any]:
+        """One short request straight to a tier: skips the chain, the budget and the queue. For `magent models test`."""
+        tier = next((t for t in self.current_tiers() if t.name == name), None)
+        if tier is None:
+            raise UnknownModelError(f"tier '{name}' is not in the active chain (disabled tiers must be enabled first)")
+        messages = [{"role": "user", "content": "Sadece 'tamam' yaz"}]
+        started = time.perf_counter()
+        try:
+            response = await litellm.acompletion(**self._call_kwargs(tier, messages, {"max_tokens": 5}))
+        except Exception as exc:  # noqa: BLE001 - reported to the caller, not raised
+            self._ledger_failure(tier, {"key": "admin", "job": "models-test"}, started, stream=False)
+            return {"ok": False, "tier": name, "model": tier.model, "error": f"{type(exc).__name__}: {str(exc)[:300]}",
+                    "latency_ms": round((time.perf_counter() - started) * 1000)}
+        prompt, completion = tokens_from_usage(getattr(response, "usage", None))
+        cost, source = price_call(
+            tier_label=tier.tier, price_in=tier.price_in, price_out=tier.price_out,
+            prompt_tokens=prompt, completion_tokens=completion, litellm_model=tier.litellm_model, response=response,
+        )
+        self._write_ledger({"key": "admin", "job": "models-test"}, tier, prompt=prompt or 0, completion=completion or 0,
+                           cost=cost, source=source, started=started, status="ok", stream=False)
+        try:
+            reply = response.choices[0].message.content or ""
+        except (AttributeError, IndexError, TypeError):
+            reply = ""
+        return {"ok": True, "tier": name, "model": tier.model, "reply": reply[:200],
+                "latency_ms": round((time.perf_counter() - started) * 1000), "prompt_tokens": prompt,
+                "completion_tokens": completion, "cost_usd": round(cost, 6), "cost_src": source}
 
     # -- usage ledger --------------------------------------------------------------------
     def _ledger_success(self, tier: ResolvedTier, ctx: dict[str, Any] | None, response: Any, started: float) -> None:
@@ -344,8 +409,9 @@ class ModelRouter:
         except Exception:  # noqa: BLE001 - accounting must never fail a request
             logger.exception("could not write usage row for tier %s", tier.name)
 
-    @staticmethod
-    def _record_failure(tier: ResolvedTier, exc: BaseException, started: float, attempts: list[dict[str, Any]]) -> None:
+    def _record_failure(self, tier: ResolvedTier, exc: BaseException, started: float, attempts: list[dict[str, Any]]) -> None:
+        if isinstance(exc, litellm.RateLimitError):
+            self._cooldown[tier.name] = time.monotonic() + tier.cooldown_seconds
         if isinstance(exc, FALLBACK_ERRORS):
             logger.warning("tier %s (%s) failed: %s", tier.name, tier.litellm_model, type(exc).__name__)
         else:
@@ -380,3 +446,27 @@ async def _prepend(first: Any, rest: AsyncIterator[Any]) -> AsyncIterator[Any]:
     yield first
     async for chunk in rest:
         yield chunk
+
+
+def _day_start(reset_tz: str | None) -> float:
+    """Timestamp of midnight today in the tier's reset timezone (local time when none is given)."""
+    now = datetime.now(ZoneInfo(reset_tz)) if reset_tz else datetime.now().astimezone()
+    return now.replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+
+
+def _rough_tokens(messages: list[dict[str, Any]]) -> int:
+    """Cheap estimate (about 4 characters per token); good enough to refuse a clearly oversized prompt."""
+    return sum(len(str(message.get("content") or "")) for message in messages) // 4
+
+
+def _cost_value(tier: ResolvedTier) -> float:
+    """Price used for ordering: output price per 1M tokens. Unpriced free/local tiers cost 0; unpriced paid tiers sort last."""
+    if tier.price_out is not None:
+        return tier.price_out
+    return 0.0 if tier.tier in ("free", "local") else math.inf
+
+
+def _order_for_profile(tiers: list[ResolvedTier], profile: str) -> list[ResolvedTier]:
+    if profile == "cheap-first":
+        return sorted(tiers, key=_cost_value)
+    return sorted(tiers, key=lambda tier: -_cost_value(tier))  # quality-first: most expensive first

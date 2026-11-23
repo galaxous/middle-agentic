@@ -109,6 +109,14 @@ class TierConfig(BaseModel):
     max_concurrency: int | None = Field(default=None, ge=0)
     # Seconds a request waits for a free slot before the chain moves on to the next tier.
     queue_wait: float = Field(default=30.0, ge=0)
+    # Attempts per day (local day, or in reset_tz, an IANA name such as America/Los_Angeles). None = no cap.
+    daily_request_cap: int | None = Field(default=None, ge=0)
+    reset_tz: str | None = None
+    # After a rate-limit error the tier is skipped for this many seconds.
+    cooldown_seconds: float = Field(default=900.0, ge=0)
+    # Capabilities. None = unknown, so the tier is not excluded.
+    supports_tools: bool | None = None
+    context_window: int | None = Field(default=None, ge=0)
 
 
 class BudgetConfig(BaseModel):

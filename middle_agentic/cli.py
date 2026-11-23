@@ -243,11 +243,14 @@ def cmd_key(args: argparse.Namespace) -> int:
             key = store.create(
                 args.name, scopes=args.scopes, expires_days=expires,
                 daily_limit=args.daily_limit, per_minute=args.per_minute,
+                budget_usd=args.budget, on_exceed=args.on_exceed,
             )
             print(f"created key '{args.name}'")
             print(f"  scopes:    {args.scopes or ','.join(DEFAULT_SCOPES)}")
             print(f"  expires:   {'never' if not expires else f'in {expires:g} days'}")
             print(f"  limits:    {args.per_minute or 'none'}/min, {args.daily_limit or 'none'}/day")
+            budget_line = f"${args.budget:g}/day ({args.on_exceed or 'downgrade'})" if args.budget else "gateway-wide"
+            print(f"  budget:    {budget_line}")
             print("copy the key now; it is not shown again:")
             print(key)
             print("on the client: magent token set gateway   (then paste this value)")
@@ -259,8 +262,9 @@ def cmd_key(args: argparse.Namespace) -> int:
                 status = "revoked" if row["revoked"] else ("expired" if row["expires_at"] and row["expires_at"] <= time.time() else "active")
                 expires = "never" if not row["expires_at"] else time.strftime("%Y-%m-%d", time.localtime(row["expires_at"]))
                 used = "never" if not row["last_used_at"] else time.strftime("%Y-%m-%d %H:%M", time.localtime(row["last_used_at"]))
+                budget = f"${row['daily_usd']:g}/day {row['on_exceed'] or 'downgrade'}" if row.get("daily_usd") else "gateway-wide"
                 print(f"{row['name']:<20} {status:<8} expires {expires:<10} scopes {row['scopes'] or '(none)':<38} "
-                      f"limits {row['per_minute'] or '-'}/min {row['daily_limit'] or '-'}/day  last used {used}")
+                      f"limits {row['per_minute'] or '-'}/min {row['daily_limit'] or '-'}/day  budget {budget}  last used {used}")
         elif args.action == "revoke":
             if not store.revoke(args.name):
                 return _fail(f"no active key named '{args.name}'")
@@ -283,6 +287,15 @@ def cmd_key(args: argparse.Namespace) -> int:
             if not store.set_limits(args.name, args.daily_limit, args.per_minute):
                 return _fail(f"no active key named '{args.name}'")
             print(f"'{args.name}' limits updated")
+        elif args.action == "set-budget":
+            if not args.name:
+                return _fail("set-budget needs the key name")
+            if args.budget is None and args.on_exceed is None and not args.clear_budget:
+                return _fail("set-budget needs --budget USD, --on-exceed, or --clear-budget")
+            if not store.set_budget(args.name, args.budget, args.on_exceed, clear=args.clear_budget):
+                return _fail(f"no active key named '{args.name}'")
+            print(f"'{args.name}': " + ("budget cleared; the gateway-wide budget applies" if args.clear_budget
+                                       else f"own budget ${args.budget or 'unchanged'}/day, on exceed: {args.on_exceed or 'unchanged'}"))
         elif args.action == "audit":
             rows = audit.query(key=args.name, hours=args.hours, limit=args.limit)
             if not rows:
@@ -563,6 +576,26 @@ def cmd_usage(args: argparse.Namespace) -> int:
 def cmd_budget(args: argparse.Namespace) -> int:
     def run() -> int:
         with _client(args) as client:
+            if args.key:
+                if args.action == "set":
+                    if args.daily is None and args.on_exceed is None:
+                        return _fail("give --daily USD and/or --on-exceed downgrade|block")
+                    data = client.set_key_budget(args.key, daily_usd=args.daily, on_exceed=args.on_exceed)
+                elif args.action == "reset":
+                    data = client.set_key_budget(args.key, clear=True)
+                else:
+                    data = client.budget(key=args.key)
+                if args.json:
+                    _print_json(data)
+                    return 0
+                if "spent_usd" in data:
+                    print(f"{args.key}: ${data['spent_usd']:.4f} of ${data['effective_daily_usd']:.2f} today "
+                          f"(on exceed: {data['effective_on_exceed']}); own budget: "
+                          f"{'none (gateway-wide)' if data['key_budget_usd'] is None else '$%.2f' % data['key_budget_usd']}")
+                else:
+                    own = "none (gateway-wide)" if data.get("key_budget_usd") is None else "$%.2f" % data["key_budget_usd"]
+                    print(f"{args.key}: own budget {own}, on exceed: {data.get('key_on_exceed') or 'gateway-wide'}")
+                return 0
             if args.action == "set":
                 if args.daily is None and args.on_exceed is None:
                     return _fail("give --daily USD and/or --on-exceed downgrade|block")
@@ -606,6 +639,20 @@ def cmd_models(args: argparse.Namespace) -> int:
                 result = client.patch_model(names[0], **changes)
                 _print_json(result) if args.json else print(f"updated {names[0]}: {result.get('override')}")
                 return 0
+            if action == "test":
+                if len(names) != 1:
+                    return _fail("models test takes exactly one tier name")
+                result = client.test_model(names[0])
+                if args.json:
+                    _print_json(result)
+                elif result.get("ok"):
+                    print(f"{names[0]}: ok in {result.get('latency_ms', '?')} ms, {result.get('prompt_tokens', '?')} in / "
+                          f"{result.get('completion_tokens', '?')} out tokens, ${float(result.get('cost_usd', 0.0)):.6f} "
+                          f"({result.get('cost_src', '?')})")
+                    print(f"reply: {result.get('reply', '')!r}")
+                else:
+                    print(f"{names[0]}: FAILED after {result.get('latency_ms')} ms: {result.get('error')}")
+                return 0 if result.get("ok") else 1
             if action == "reorder":
                 if not names:
                     return _fail("models reorder takes the tier names in the wanted order")
@@ -751,6 +798,7 @@ def build_parser() -> argparse.ArgumentParser:
     budget.add_argument("action", nargs="?", default="show", choices=["show", "set", "reset"])
     budget.add_argument("--daily", type=float, metavar="USD", help="set: daily cap in USD (0 = no cap)")
     budget.add_argument("--on-exceed", choices=["downgrade", "block"], help="set: what happens at the cap")
+    budget.add_argument("--key", help="show/set/reset one key's own budget instead of the gateway-wide one")
     budget.add_argument("--json", action="store_true")
     budget.set_defaults(func=cmd_budget)
 
@@ -758,7 +806,7 @@ def build_parser() -> argparse.ArgumentParser:
     add_target(models)
     models.add_argument(
         "action", nargs="?", default="list",
-        choices=["list", "enable", "disable", "set", "reorder", "reset"],
+        choices=["list", "enable", "disable", "set", "reorder", "reset", "test"],
     )
     models.add_argument("names", nargs="*", help="tier name(s); reorder takes them in the new order")
     models.add_argument("--model", help="set: provider model id for this tier")
@@ -826,7 +874,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     key = sub.add_parser("key", help="gateway API keys: create, list, revoke, scopes, expiry, quotas, audit")
     key.add_argument(
-        "action", choices=["create", "list", "revoke", "set-scopes", "renew", "set-limits", "audit", "audit-purge"]
+        "action",
+        choices=["create", "list", "revoke", "set-scopes", "renew", "set-limits", "set-budget", "audit", "audit-purge"],
     )
     key.add_argument("name", nargs="?", help="key name, e.g. macbook-cursor (audit: optional filter)")
     key.add_argument(
@@ -837,6 +886,9 @@ def build_parser() -> argparse.ArgumentParser:
     key.add_argument("--expires-days", type=float, help="create/renew: validity in days (0 = never; create default 90)")
     key.add_argument("--daily-limit", type=int, help="requests per UTC day (0 = no limit)")
     key.add_argument("--per-minute", type=int, help="requests per minute (0 = no limit)")
+    key.add_argument("--budget", type=float, metavar="USD", help="create/set-budget: this key's own daily spend cap (USD)")
+    key.add_argument("--on-exceed", choices=["downgrade", "block"], help="create/set-budget: what happens at this key's cap")
+    key.add_argument("--clear-budget", action="store_true", help="set-budget: remove this key's cap (use the gateway budget)")
     key.add_argument("--hours", type=float, default=24, help="audit: look back this many hours (default 24)")
     key.add_argument("--limit", type=int, default=100, help="audit: rows to show")
     key.add_argument("--older-than-days", type=float, help="audit-purge: delete rows older than this")

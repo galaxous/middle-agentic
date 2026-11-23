@@ -40,6 +40,20 @@ chain:
   # - { name: llama-cpp,    tier: local, runtime: llamacpp, model: local, api_base: http://127.0.0.1:8080/v1 }
   # - { name: vllm,         tier: local, runtime: vllm,     model: Qwen/Qwen2.5-7B-Instruct, api_base: http://127.0.0.1:8001/v1 }
   # - { name: lmstudio,     tier: local, runtime: lmstudio, model: qwen2.5-7b-instruct }
+  #
+  # Optional fields for any tier (all default to "not set"):
+  #   price_in / price_out      USD per 1M tokens; overrides LiteLLM's price table (needed for new models)
+  #   max_concurrency           parallel requests (local tiers default to 1; 0 or omitted = no limit for cloud)
+  #   queue_wait                seconds to wait for a slot before moving on (default 30)
+  #   daily_request_cap         attempts per day; reset_tz sets the day boundary (e.g. America/Los_Angeles)
+  #   cooldown_seconds          skip the tier this long after a rate limit (default 900)
+  #   supports_tools            false = never sent requests that carry tools
+  #   context_window            skip the tier when the prompt is clearly larger
+  #
+  # Model ids and prices change often. Verify them with `magent models test <name>` before relying on them, e.g.:
+  # - { name: gemini-hydrogen, tier: free, runtime: gemini, model: gemini-4-hydrogen, price_in: <USD/1M>, price_out: <USD/1M>, daily_request_cap: <verify>, reset_tz: America/Los_Angeles }
+  # - { name: gemini-neon,     tier: paid, runtime: gemini, model: gemini-4-neon,     price_in: <USD/1M>, price_out: <USD/1M> }
+  # - { name: luna,            tier: paid, runtime: openai, model: gpt-6-luna,        price_in: <USD/1M>, price_out: <USD/1M> }
 
 # Other nodes this client can talk to. Tailscale peers are discovered automatically;
 # static entries are useful for non-tailnet hosts or fixed aliases.

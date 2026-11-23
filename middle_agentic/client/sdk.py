@@ -116,8 +116,15 @@ class MiddleAgentClient:
     def usage(self, by: str = "tier", days: int = 1) -> list[dict[str, Any]]:
         return self._request("GET", "/admin/usage", params={"by": by, "days": days}).json()["data"]
 
-    def budget(self) -> dict[str, Any]:
-        return self._request("GET", "/admin/budget").json()
+    def budget(self, key: str | None = None) -> dict[str, Any]:
+        params = {"key": key} if key else None
+        return self._request("GET", "/admin/budget", params=params).json()
+
+    def set_key_budget(
+        self, name: str, daily_usd: float | None = None, on_exceed: str | None = None, *, clear: bool = False
+    ) -> dict[str, Any]:
+        body = {"clear": True} if clear else self._given(daily_usd=daily_usd, on_exceed=on_exceed)
+        return self._request("PUT", f"/admin/keys/{name}/budget", json=body).json()
 
     # -- admin: live changes (take effect on the next request) ---------------------------
     @staticmethod
@@ -126,6 +133,9 @@ class MiddleAgentClient:
 
     def patch_model(self, name: str, **changes: Any) -> dict[str, Any]:
         return self._request("PATCH", f"/admin/models/{name}", json=self._given(**changes)).json()
+
+    def test_model(self, name: str) -> dict[str, Any]:
+        return self._request("POST", f"/admin/models/{name}/test").json()
 
     def reset_model(self, name: str) -> dict[str, Any]:
         return self._request("DELETE", f"/admin/models/{name}").json()

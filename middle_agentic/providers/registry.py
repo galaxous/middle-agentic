@@ -66,6 +66,11 @@ class ResolvedTier:
     price_out: float | None = None
     max_concurrency: int | None = None
     queue_wait: float = 30.0
+    daily_request_cap: int | None = None
+    reset_tz: str | None = None
+    cooldown_seconds: float = 900.0
+    supports_tools: bool | None = None
+    context_window: int | None = None
 
     def call_kwargs(self) -> dict[str, Any]:
         kwargs: dict[str, Any] = {"model": self.litellm_model}
@@ -121,6 +126,9 @@ class ResolvedTier:
             "price_out": self.price_out,
             "max_concurrency": self.max_concurrency,
             "queue_wait": self.queue_wait,
+            "daily_request_cap": self.daily_request_cap,
+            "supports_tools": self.supports_tools,
+            "context_window": self.context_window,
         }
 
 
@@ -149,6 +157,11 @@ def resolve_tier(config: TierConfig) -> ResolvedTier:
         # One model per local machine at a time by default; cloud tiers have no local queue.
         max_concurrency=config.max_concurrency if config.max_concurrency is not None else (1 if spec.local else None),
         queue_wait=config.queue_wait,
+        daily_request_cap=config.daily_request_cap,
+        reset_tz=config.reset_tz,
+        cooldown_seconds=config.cooldown_seconds,
+        supports_tools=config.supports_tools,
+        context_window=config.context_window,
     )
 
 
