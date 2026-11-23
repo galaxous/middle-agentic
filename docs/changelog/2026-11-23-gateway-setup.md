@@ -1,8 +1,23 @@
-# 2026-11-23 · Gateway'i repodan kurtarma: `magent gateway-setup` · commit bekliyor
+# 2026-11-23 · Gateway'i repodan kurtarma: `magent gateway-setup` · v0.4.0
 
 ## Durum
 
-`commit bekliyor`. Gateway Mac'te bir kez çalıştırılacak; sonraki güncellemeler sürüm kurulumuyla yapılır.
+`main'de` (6e71f8f). Yayın: v0.4.0 (yeni özellik, minör sürüm). Gateway Mac'te bir kez çalıştırılır; sonraki güncellemeler sürüm kurulumuyla yapılır.
+
+## Kurulum (v0.4.0)
+
+```bash
+# Gateway, repo olmadan (veri klasörü isteğe bağlı):
+curl -fsSL https://github.com/galaxous/middle-agentic/releases/download/v0.4.0/install.sh | sh -s -- --role gateway
+MAGENT_DATA_DIR=~/magent-data sh install.sh --role gateway    # db, .env, config bu klasörden alınır
+
+# İstemci (değişmedi):
+curl -fsSL https://github.com/galaxous/middle-agentic/releases/download/v0.4.0/install.sh | sh
+```
+
+Windows: `$env:MAGENT_ROLE = 'gateway'; irm <install.ps1 url> | iex`
+
+Veri klasörü hazırlamak için mevcut gateway'den yalnızca üç dosya kopyalanır: `agent_memory.db`, `.env`, `config.yaml`. Repo gerekmez.
 
 ## Değişenler
 

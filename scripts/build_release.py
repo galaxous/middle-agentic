@@ -16,6 +16,13 @@ ROOT = Path(__file__).resolve().parent.parent
 TEMPLATES = ROOT / "scripts" / "installer"
 
 
+def render(template_text: str, version: str, wheel_name: str, digest: str) -> str:
+    """Fill the installer placeholders. Kept separate so tests can render without building a wheel."""
+    return (template_text.replace("@VERSION@", version)
+            .replace("@WHEEL@", wheel_name)
+            .replace("@SHA256@", digest))
+
+
 def main() -> int:
     version = re.search(r'__version__ = "([^"]+)"', (ROOT / "middle_agentic" / "__init__.py").read_text()).group(1)
     dist = ROOT / "dist"
@@ -26,8 +33,7 @@ def main() -> int:
     wheel = next(dist.glob(f"middle_agentic-{version}-*.whl"))
     digest = hashlib.sha256(wheel.read_bytes()).hexdigest()
     for template, name in (("install.sh.tmpl", "install.sh"), ("install.ps1.tmpl", "install.ps1")):
-        text = (TEMPLATES / template).read_text(encoding="utf-8")
-        text = text.replace("@VERSION@", version).replace("@WHEEL@", wheel.name).replace("@SHA256@", digest)
+        text = render((TEMPLATES / template).read_text(encoding="utf-8"), version, wheel.name, digest)
         target = dist / name
         target.write_text(text, encoding="utf-8")
         if name.endswith(".sh"):

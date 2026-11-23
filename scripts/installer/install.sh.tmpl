@@ -1,12 +1,31 @@
 #!/bin/sh
 # middle-agentic installer (macOS, Linux, Raspberry Pi).
-# Installs magent with pipx from a GitHub Release, checks the wheel's SHA-256, then runs `magent client-setup`.
+# Installs magent with pipx from a GitHub Release and checks the wheel's SHA-256 before installing.
+#   client (default): runs `magent client-setup`  (asks for gateway address and key, verifies them)
+#   gateway:          runs `magent gateway-setup` (serves memory and models on this machine)
+# Usage:
+#   curl -fsSL <release>/install.sh | sh
+#   curl -fsSL <release>/install.sh | sh -s -- --role gateway
+#   MAGENT_DATA_DIR=~/magent-data sh install.sh --role gateway   # copies db/.env/config from that folder
 set -eu
 
 VERSION="@VERSION@"
 WHEEL="@WHEEL@"
 SHA256="@SHA256@"
 URL="https://github.com/galaxous/middle-agentic/releases/download/v${VERSION}/${WHEEL}"
+
+ROLE="${MAGENT_ROLE:-client}"
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --role) ROLE="${2:-}"; shift 2 ;;
+    --role=*) ROLE="${1#--role=}"; shift ;;
+    *) printf 'hata: bilinmeyen seçenek: %s\n' "$1" >&2; exit 1 ;;
+  esac
+done
+case "$ROLE" in
+  client|gateway) ;;
+  *) printf 'hata: --role client veya gateway olmalı (verilen: %s)\n' "$ROLE" >&2; exit 1 ;;
+esac
 
 say() { printf '%s\n' "$*"; }
 die() { printf 'hata: %s\n' "$*" >&2; exit 1; }
@@ -15,8 +34,10 @@ command -v python3 >/dev/null 2>&1 || die "python3 gerekli (3.10 veya üzeri)"
 python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)' || die "Python 3.10 veya üzeri gerekli"
 command -v curl >/dev/null 2>&1 || die "curl gerekli"
 
-# The setup wizard asks questions, so it needs a real terminal even when this script arrived through a pipe.
-[ -r /dev/tty ] || die "etkileşimli bir terminal gerekli; kurulumdan sonra 'magent client-setup' komutunu elle çalıştırın"
+# The client wizard asks questions, so it needs a terminal even when this script arrived through a pipe.
+if [ "$ROLE" = "client" ] && [ ! -r /dev/tty ]; then
+  die "etkileşimli bir terminal gerekli; kurulumdan sonra 'magent client-setup' komutunu elle çalıştırın"
+fi
 
 ensure_pipx() {
   command -v pipx >/dev/null 2>&1 && return 0
@@ -56,4 +77,12 @@ BIN_DIR="$(pipx environment --value PIPX_BIN_DIR 2>/dev/null || echo "$HOME/.loc
 MAGENT="$BIN_DIR/magent"
 [ -x "$MAGENT" ] || die "magent kurulamadı ($MAGENT bulunamadı)"
 
-"$MAGENT" client-setup </dev/tty
+if [ "$ROLE" = "gateway" ]; then
+  if [ -n "${MAGENT_DATA_DIR:-}" ]; then
+    "$MAGENT" gateway-setup --from-repo "$MAGENT_DATA_DIR"
+  else
+    "$MAGENT" gateway-setup
+  fi
+else
+  "$MAGENT" client-setup </dev/tty
+fi

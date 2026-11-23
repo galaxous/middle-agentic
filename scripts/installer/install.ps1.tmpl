@@ -1,12 +1,17 @@
 # middle-agentic installer (Windows).
-# Installs magent with pipx from a GitHub Release, checks the wheel's SHA-256, then runs `magent client-setup`.
-# Usage:  irm https://github.com/galaxous/middle-agentic/releases/download/v@VERSION@/install.ps1 | iex
+# Installs magent with pipx from a GitHub Release and checks the wheel's SHA-256 before installing.
+#   client (default): runs `magent client-setup`
+#   gateway:          runs `magent gateway-setup`
+# Usage (client):   irm https://github.com/galaxous/middle-agentic/releases/download/v@VERSION@/install.ps1 | iex
+# Usage (gateway):  $env:MAGENT_ROLE = 'gateway'; irm <same url> | iex
 $ErrorActionPreference = 'Stop'
 
 $Version = '@VERSION@'
 $Wheel = '@WHEEL@'
 $Sha256 = '@SHA256@'
 $Url = "https://github.com/galaxous/middle-agentic/releases/download/v$Version/$Wheel"
+$Role = if ($env:MAGENT_ROLE) { $env:MAGENT_ROLE } else { 'client' }
+if ($Role -notin @('client', 'gateway')) { throw "MAGENT_ROLE must be 'client' or 'gateway' (given: $Role)" }
 
 $Python = $null
 $PythonArgs = @()
@@ -44,4 +49,9 @@ $BinDir = (& $Python @PythonArgs -m pipx environment --value PIPX_BIN_DIR).Trim(
 $Magent = Join-Path $BinDir 'magent.exe'
 if (-not (Test-Path $Magent)) { throw "magent kurulamadı ($Magent bulunamadı)" }
 
-& $Magent client-setup
+if ($Role -eq 'gateway') {
+    if ($env:MAGENT_DATA_DIR) { & $Magent gateway-setup --from-repo $env:MAGENT_DATA_DIR }
+    else { & $Magent gateway-setup }
+} else {
+    & $Magent client-setup
+}
