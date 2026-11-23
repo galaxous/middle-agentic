@@ -1,8 +1,8 @@
-# 2026-11-23 · Canlı katman/bütçe kontrolü ve katman başına eşzamanlılık · commit bekliyor
+# 2026-11-23 · Canlı katman/bütçe kontrolü ve katman başına eşzamanlılık · main'de (134b84e), v0.6.0
 
 ## Durum
 
-`commit bekliyor`. Gateway ve client kodu yazıldı, testler geçiyor (220). Yayın henüz yapılmadı. Bu, v0.5.0'a ek bir sürümdür (öneri: v0.6.0, çünkü yeni admin yazma uçları ve davranış değişikliği içeriyor).
+`main'de` (134b84e). v0.6.0 olarak yayınlandı (sürüm commit'i 582c7cd). Testler: 220 geçiyor.
 
 ## Sorun
 
@@ -47,4 +47,4 @@
 - Katman ekleme/silme (yeni katman tanımı) çalışma zamanında yapılamıyor; yalnızca mevcut katmanlar değiştirilir.
 - Kapasite bayrakları (`supports_tools`, context) ve profiller (`cheap-first`) yok.
 - Bütçede tahmini rezervasyon yok; aşım payı hâlâ mevcut.
-- Gateway kurulumu (v0.6.0 yayını sonrası) gateway makinesinde yapılacak; `DELETE /admin/overrides` ile tüm değişiklikler sıfırlanabilir.
+- Gateway makinesinde v0.6.0 kurulumu yapılacak; `DELETE /admin/overrides` ile tüm değişiklikler sıfırlanabilir.
