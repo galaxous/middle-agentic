@@ -62,6 +62,8 @@ class ResolvedTier:
     timeout: float | None
     health_url: str | None
     _health_cache: tuple[float, bool, str] | None = field(default=None, repr=False)
+    price_in: float | None = None
+    price_out: float | None = None
 
     def call_kwargs(self) -> dict[str, Any]:
         kwargs: dict[str, Any] = {"model": self.litellm_model}
@@ -113,6 +115,8 @@ class ResolvedTier:
             "runtime": self.runtime,
             "model": self.model,
             "local": self.local,
+            "price_in": self.price_in,
+            "price_out": self.price_out,
         }
 
 
@@ -136,6 +140,8 @@ def resolve_tier(config: TierConfig) -> ResolvedTier:
         local=spec.local,
         timeout=config.timeout,
         health_url=health_url,
+        price_in=config.price_in,
+        price_out=config.price_out,
     )
 
 

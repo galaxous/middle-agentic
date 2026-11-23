@@ -88,7 +88,7 @@ def test_unknown_scope_and_empty_scope_are_refused(tmp_path) -> None:
 
     store = ApiKeyStore(tmp_path / "k.db")
     with pytest.raises(ApiKeyError, match="unknown scope"):
-        store.create("a", scopes="memory:read,admin")
+        store.create("a", scopes="memory:read,root")
     with pytest.raises(ApiKeyError, match="at least one"):
         store.create("b", scopes=" , ")
 

@@ -5,6 +5,7 @@ Scopes limit what a leaked key can do:
   memory:write   record memory, hook events
   memory:delete  forget (soft delete; off by default)
   models         chat completions and the MCP `ask` tool (these spend provider money)
+  admin          read-only admin endpoints: usage, budget, model chain (never granted by default)
 
 Each key also has an expiry (default 90 days, 0 = never), an optional requests-per-minute limit
 (counted in this process) and an optional requests-per-day limit (counted in the audit log).
@@ -28,7 +29,7 @@ if TYPE_CHECKING:  # pragma: no cover
 
 KEY_PREFIX = "mag_"
 TABLE = "gateway_api_keys"
-SCOPES = ("memory:read", "memory:write", "memory:delete", "models")
+SCOPES = ("memory:read", "memory:write", "memory:delete", "models", "admin")
 DEFAULT_SCOPES = ("memory:read", "memory:write")
 DEFAULT_EXPIRY_DAYS = 90
 _KEY_COLUMNS = {"scopes": "TEXT NOT NULL DEFAULT ''", "expires_at": "REAL", "daily_limit": "INTEGER", "per_minute": "INTEGER"}

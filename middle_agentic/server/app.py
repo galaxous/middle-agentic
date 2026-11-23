@@ -20,11 +20,12 @@ from middle_agentic.config import Settings, load_settings
 from middle_agentic.memory.graph import GraphMemory
 from middle_agentic.providers.chain import ModelRouter
 from middle_agentic.providers.registry import resolve_chain
-from middle_agentic.server import routes_chat, routes_hooks, routes_memory
+from middle_agentic.server import routes_admin, routes_chat, routes_hooks, routes_memory
 from middle_agentic.server.api_keys import ApiKeyStore
 from middle_agentic.server.audit import AuditLog, AuditMiddleware
 from middle_agentic.server.mcp_http import mcp_lifespan, mount_mcp
 from middle_agentic.server.state import GatewayState, get_state
+from middle_agentic.server.usage import UsageLedger
 
 logger = logging.getLogger("middle_agentic.server")
 
@@ -50,14 +51,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         related_limit=settings.memory.related_limit,
         important_limit=settings.memory.important_limit,
     )
+    usage = UsageLedger(settings.memory.resolved_db_path())
     router = ModelRouter(
         resolve_chain(settings.chain),
         request_timeout=settings.gateway.request_timeout,
         probe_timeout=settings.discovery.probe_timeout,
+        ledger=usage,
     )
     audit = AuditLog(settings.memory.resolved_db_path())
     keys = ApiKeyStore(settings.memory.resolved_db_path(), audit=audit)
-    state = GatewayState(settings=settings, memory=memory, router=router, keys=keys)
+    state = GatewayState(settings=settings, memory=memory, router=router, keys=keys, usage=usage)
 
     # Created before the app so the lifespan can start the MCP session manager.
     mcp_holder: dict[str, Any] = {}
@@ -81,6 +84,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(routes_chat.router)
     app.include_router(routes_memory.router)
     app.include_router(routes_hooks.router)
+    app.include_router(routes_admin.router)
     mcp_holder["app"] = mount_mcp(app, state)
     app.add_middleware(AuditMiddleware, log=audit)  # added last, so it wraps everything else
 

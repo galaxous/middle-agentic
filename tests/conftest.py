@@ -63,6 +63,7 @@ class FakeLLM:
         return litellm.ModelResponse(
             model=kwargs["model"],
             choices=[{"index": 0, "message": {"role": "assistant", "content": text}, "finish_reason": "stop"}],
+            usage={"prompt_tokens": 1000, "completion_tokens": 500, "total_tokens": 1500},
         )
 
     def models_called(self) -> list[str]:

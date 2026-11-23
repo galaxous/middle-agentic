@@ -102,6 +102,20 @@ class TierConfig(BaseModel):
     api_base: str | None = None
     api_key_env: str | None = None
     timeout: float | None = None
+    # USD per 1M tokens. When set they override LiteLLM's price table, which is how brand-new models get priced.
+    price_in: float | None = Field(default=None, ge=0)
+    price_out: float | None = Field(default=None, ge=0)
+
+
+class BudgetConfig(BaseModel):
+    """Daily spend cap across all keys. 0 disables the cap.
+
+    downgrade: once the day's spend reaches the cap, paid tiers are skipped; free and local tiers still answer.
+    block: once the cap is reached, requests get HTTP 429 until the local day changes.
+    """
+
+    daily_usd: float = Field(default=1.0, ge=0)
+    on_exceed: Literal["downgrade", "block"] = "downgrade"
 
 
 class PeerConfig(BaseModel):
@@ -130,6 +144,7 @@ class Settings(BaseModel):
     peers: list[PeerConfig] = Field(default_factory=list)
     discovery: DiscoveryConfig = Field(default_factory=DiscoveryConfig)
     client: ClientConfig = Field(default_factory=ClientConfig)
+    budget: BudgetConfig = Field(default_factory=BudgetConfig)
 
     @model_validator(mode="after")
     def _unique_tier_names(self) -> "Settings":

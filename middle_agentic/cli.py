@@ -511,7 +511,13 @@ def cmd_ask(args: argparse.Namespace) -> int:
 
     def run() -> int:
         with _client(args) as client:
-            options = {"model": args.model, "system": args.system, "memory": not args.no_memory}
+            options = {
+                "model": args.model,
+                "system": args.system,
+                "memory": not args.no_memory,
+                "job": args.job,
+                "budget_usd": args.budget,
+            }
             if args.stream:
                 for delta in client.stream(prompt, **options):
                     print(delta, end="", flush=True)
@@ -527,6 +533,64 @@ def cmd_ask(args: argparse.Namespace) -> int:
                 meta = (result.node, result.tier_name, result.model)
         if not args.quiet:
             print(f"[node={meta[0]} tier={meta[1]} model={meta[2]}]", file=sys.stderr)
+        return 0
+
+    return _run_client_command(run)
+
+
+def cmd_usage(args: argparse.Namespace) -> int:
+    def run() -> int:
+        with _client(args) as client:
+            rows = client.usage(by=args.by, days=args.days)
+        if args.json:
+            _print_json(rows)
+            return 0
+        if not rows:
+            print("no usage recorded")
+            return 0
+        print(f"{args.by.upper():<24} {'REQUESTS':>8} {'TOKENS IN':>10} {'TOKENS OUT':>10} {'COST USD':>10}")
+        for row in rows:
+            print(
+                f"{str(row.get('name', '-')):<24} {row.get('requests', 0):>8} "
+                f"{row.get('prompt_tokens', 0):>10} {row.get('completion_tokens', 0):>10} "
+                f"{float(row.get('cost_usd', 0.0)):>10.4f}"
+            )
+        return 0
+
+    return _run_client_command(run)
+
+
+def cmd_budget(args: argparse.Namespace) -> int:
+    def run() -> int:
+        with _client(args) as client:
+            data = client.budget()
+        if args.json:
+            _print_json(data)
+            return 0
+        spent = float(data.get("spent_usd", 0.0))
+        limit = float(data.get("daily_usd", 0.0))
+        policy = data.get("on_exceed", "downgrade")
+        print(f"today: ${spent:.4f} of ${limit:.2f} (on exceed: {policy})")
+        return 0
+
+    return _run_client_command(run)
+
+
+def cmd_models(args: argparse.Namespace) -> int:
+    def run() -> int:
+        with _client(args) as client:
+            rows = client.admin_models()
+        if args.json:
+            _print_json(rows)
+            return 0
+        print(f"{'TIER':<18} {'ENABLED':<8} {'TIER TYPE':<10} {'MODEL':<28} {'PRICE in/out per 1M':<20} OVERRIDDEN")
+        for row in rows:
+            price = f"{row.get('price_in', '-')}/{row.get('price_out', '-')}"
+            print(
+                f"{row.get('name', '-'):<18} {'yes' if row.get('enabled', True) else 'no':<8} "
+                f"{row.get('tier', '-'):<10} {row.get('model', '-'):<28} {price:<20} "
+                f"{'yes' if row.get('overridden') else 'no'}"
+            )
         return 0
 
     return _run_client_command(run)
@@ -624,7 +688,26 @@ def build_parser() -> argparse.ArgumentParser:
     ask.add_argument("--no-memory", action="store_true", help="skip memory pre/post hooks")
     ask.add_argument("--json", action="store_true", help="print the raw OpenAI response")
     ask.add_argument("--quiet", "-q", action="store_true", help="do not print node/tier info")
+    ask.add_argument("--job", help="label this request for usage reports (X-Job), e.g. 'daily-digest'")
+    ask.add_argument("--budget", type=float, metavar="USD", help="cap this request's spend (X-Budget-USD); can only lower the key's budget")
     ask.set_defaults(func=cmd_ask)
+
+    usage = sub.add_parser("usage", help="spend and request counts from the gateway (needs an admin key)")
+    add_target(usage)
+    usage.add_argument("--by", choices=["tier", "key", "job", "day"], default="tier")
+    usage.add_argument("--days", type=int, default=1, help="how many days back, including today")
+    usage.add_argument("--json", action="store_true")
+    usage.set_defaults(func=cmd_usage)
+
+    budget = sub.add_parser("budget", help="today's spend against the daily budget (needs an admin key)")
+    add_target(budget)
+    budget.add_argument("--json", action="store_true")
+    budget.set_defaults(func=cmd_budget)
+
+    models = sub.add_parser("models", help="list the gateway's model tiers with prices and overrides (needs an admin key)")
+    add_target(models)
+    models.add_argument("--json", action="store_true")
+    models.set_defaults(func=cmd_models)
 
     hook = sub.add_parser("hook", help="memory pre/post hook primitives on a node")
     hook.add_argument("action", choices=["context", "record", "forget", "sessions", "graph"])
@@ -686,8 +769,8 @@ def build_parser() -> argparse.ArgumentParser:
     key.add_argument("name", nargs="?", help="key name, e.g. macbook-cursor (audit: optional filter)")
     key.add_argument(
         "--scopes",
-        help="comma-separated: memory:read, memory:write, memory:delete, models "
-        "(create default: memory:read,memory:write)",
+        help="comma-separated: memory:read, memory:write, memory:delete, models, admin "
+        "(create default: memory:read,memory:write; admin is never a default)",
     )
     key.add_argument("--expires-days", type=float, help="create/renew: validity in days (0 = never; create default 90)")
     key.add_argument("--daily-limit", type=int, help="requests per UTC day (0 = no limit)")

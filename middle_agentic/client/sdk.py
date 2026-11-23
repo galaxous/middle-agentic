@@ -109,6 +109,16 @@ class MiddleAgentClient:
     def models(self) -> list[dict[str, Any]]:
         return self._request("GET", "/v1/models").json()["data"]
 
+    # -- admin (read-only; needs a key with the admin scope) ---------------------------
+    def admin_models(self) -> list[dict[str, Any]]:
+        return self._request("GET", "/admin/models").json()["data"]
+
+    def usage(self, by: str = "tier", days: int = 1) -> list[dict[str, Any]]:
+        return self._request("GET", "/admin/usage", params={"by": by, "days": days}).json()["data"]
+
+    def budget(self) -> dict[str, Any]:
+        return self._request("GET", "/admin/budget").json()
+
     @staticmethod
     def discover(settings: Settings | None = None, only_online: bool = True) -> list[Node]:
         return discover_nodes(settings or load_settings(), only_online=only_online)
@@ -122,6 +132,8 @@ class MiddleAgentClient:
         system: str | None = None,
         session_id: str | None = None,
         memory: bool = True,
+        job: str | None = None,
+        budget_usd: float | None = None,
         **params: Any,
     ) -> ChatResult:
         session = self._session(session_id)
@@ -129,7 +141,7 @@ class MiddleAgentClient:
             "POST",
             "/v1/chat/completions",
             json={"model": model, "messages": _messages(messages, system), "stream": False, **params},
-            headers={"X-Session-Id": session, "X-Memory": "on" if memory else "off"},
+            headers=_gateway_headers(session, memory, job, budget_usd),
         )
         payload = response.json()
         self.last_headers = dict(response.headers)
@@ -158,6 +170,8 @@ class MiddleAgentClient:
         system: str | None = None,
         session_id: str | None = None,
         memory: bool = True,
+        job: str | None = None,
+        budget_usd: float | None = None,
         **params: Any,
     ) -> Iterator[str]:
         """Yield text deltas. Gateway headers (tier, model) are in ``last_headers`` once iteration starts."""
@@ -166,7 +180,7 @@ class MiddleAgentClient:
             "POST",
             "/v1/chat/completions",
             json={"model": model, "messages": _messages(messages, system), "stream": True, **params},
-            headers={"X-Session-Id": session, "X-Memory": "on" if memory else "off"},
+            headers=_gateway_headers(session, memory, job, budget_usd),
         ) as response:
             if response.status_code >= 400:
                 response.read()
@@ -254,6 +268,18 @@ class MiddleAgentClient:
     # -- agent-tool hooks --------------------------------------------------------------
     def hook(self, tool: str, event: str, payload: dict[str, Any]) -> dict[str, Any]:
         return self._request("POST", f"/v1/hooks/{tool}/{event}", json=payload).json()
+
+
+def _gateway_headers(session: str, memory: bool, job: str | None, budget_usd: float | None) -> dict[str, str]:
+    headers = {"X-Session-Id": session, "X-Memory": "on" if memory else "off"}
+    if job:
+        headers["X-Job"] = job
+    if budget_usd is not None:
+        if budget_usd < 0:
+            raise ValueError("budget_usd must be zero or positive")
+        # Gateway applies this only as a cap: it can lower the key's daily budget, never raise it.
+        headers["X-Budget-USD"] = f"{budget_usd:.4f}"
+    return headers
 
 
 def _error_detail(response: httpx.Response) -> Any:

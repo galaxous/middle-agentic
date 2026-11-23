@@ -27,3 +27,5 @@ Her özellik veya önemli değişiklik, **commit atılmadan önce** bu klasöre 
 | [2026-11-23](2026-11-23-gateway-setup.md) | Gateway'i repodan kurtarma (`magent gateway-setup`), v0.4.0 | `main'de` (643cddc) |
 | [2026-11-23](2026-11-23-readme-install-flow.md) | README kurulum akışı: repo olmadan ağ, SSH, magent | `commit bekliyor` |
 | [2026-11-23](2026-11-23-gateway-provider-keys.md) | Gateway sağlayıcı anahtarları: düz metin .env yerine Keychain | `commit bekliyor` |
+| [2026-11-23](2026-11-23-client-usage-budget.md) | İstemci: `--job` / `--budget`, `magent usage`, `budget`, `models` (gateway v0.5.0 bekliyor) | `commit bekliyor` |
+| [2026-11-23](2026-11-23-gateway-usage-budget.md) | Gateway: kullanım kaydı, günlük bütçe, admin uçları (v0.5.0) | `commit bekliyor` |

@@ -13,6 +13,7 @@ from middle_agentic.hooks import HookDeps
 from middle_agentic.memory.graph import GraphMemory
 from middle_agentic.server.api_keys import ApiKeyStore
 from middle_agentic.providers.chain import ModelRouter
+from middle_agentic.server.usage import UsageLedger
 
 logger = logging.getLogger("middle_agentic.server")
 
@@ -23,6 +24,7 @@ class GatewayState:
     memory: GraphMemory
     router: ModelRouter
     keys: ApiKeyStore
+    usage: UsageLedger
     _tasks: set[asyncio.Task[Any]] = field(default_factory=set)
 
     @property
